@@ -1,0 +1,91 @@
+import dataclasses
+import unittest
+
+from hermes_trading.growth import BAR_MS, HOUR_MS, GrowthConfig, Portfolio, candidate
+from hermes_trading.growth_lab import assess
+from hermes_trading.score import score
+
+
+class GrowthTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = GrowthConfig(assets=("BTC/USDT", "ETH/USDT", "SOL/USDT"))
+
+    def _signal(self, asset="BTC/USDT", ts=BAR_MS):
+        return {"asset": asset, "regime": "RANGE", "strength": 0.2,
+                "stop_fraction": 0.02, "decision_ms": ts}
+
+    def _bar(self, price=100, low=99, high=101):
+        return {"open": price, "high": high, "low": low, "close": price}
+
+    def test_shared_account_next_bar_rank_and_risk(self):
+        p = Portfolio(self.cfg)
+        p.decide([self._signal("ETH/USDT"), {**self._signal(), "strength": 0.5}], BAR_MS)
+        self.assertIsNone(p.state["position"])
+        p.on_bar("BTC/USDT", self._bar(), BAR_MS)
+        pos = p.state["position"]
+        self.assertEqual(pos["asset"], "BTC/USDT")
+        self.assertLessEqual(pos["qty"] * pos["entry"], self.cfg.capital * self.cfg.max_exposure + 1e-8)
+        worst = pos["qty"] * (pos["entry"] - pos["stop"] +
+                              pos["entry"] * (2 * self.cfg.fee + 2 * self.cfg.slippage + self.cfg.spread))
+        self.assertLessEqual(worst, self.cfg.capital * self.cfg.risk_per_trade + 1e-8)
+        p.decide([self._signal("ETH/USDT", 2 * BAR_MS)], 2 * BAR_MS)
+        self.assertIsNone(p.state["pending"])
+
+    def test_stop_wins_when_bar_touches_stop_and_target(self):
+        p = Portfolio(self.cfg)
+        p.decide([self._signal()], BAR_MS)
+        p.on_bar("BTC/USDT", self._bar(), BAR_MS)
+        pos = p.state["position"]
+        p.on_bar("BTC/USDT", self._bar(100, pos["stop"] - 1, pos["target"] + 1), 2 * BAR_MS)
+        self.assertEqual(p.state["trades"][0]["reason"], "stop")
+        self.assertLess(p.equity(), self.cfg.capital)
+
+    def test_gap_latches_new_entries(self):
+        p = Portfolio(self.cfg)
+        p.on_bar("BTC/USDT", self._bar(), BAR_MS)
+        p.on_bar("BTC/USDT", self._bar(), 3 * BAR_MS)
+        self.assertEqual(p.state["halted"], "market_data_gap")
+        p.decide([self._signal(ts=4 * BAR_MS)], 4 * BAR_MS)
+        self.assertIsNone(p.state["pending"])
+
+    def test_drawdown_latches_across_restart(self):
+        p = Portfolio(self.cfg)
+        p.state["cash"] = 46.5
+        p.decide([self._signal()], BAR_MS)
+        self.assertEqual(p.state["halted"], "drawdown_limit")
+        recovered = Portfolio(self.cfg, p.state)
+        recovered.decide([self._signal(ts=2 * BAR_MS)], 2 * BAR_MS)
+        self.assertIsNone(recovered.state["pending"])
+
+    def test_score_uses_mtm_for_composite(self):
+        goal = {"target_return_30d": 0.05, "max_drawdown": 0.08, "min_sharpe": 1.2}
+        trade = [{"pnl_pct": 0.01, "opened_at": "2026-01-01T00:00:00+00:00",
+                  "closed_at": "2026-01-01T00:30:00+00:00"}]
+        curve = [{"ts": "2026-01-01T00:00:00+00:00", "equity": 50},
+                 {"ts": "2026-01-01T00:15:00+00:00", "equity": 45},
+                 {"ts": "2026-01-01T00:30:00+00:00", "equity": 50.5}]
+        self.assertLess(score(trade, goal, curve), score(trade, goal))
+
+    def test_lab_cannot_modify_risk(self):
+        altered = dataclasses.replace(self.cfg, risk_per_trade=0.02)
+        with self.assertRaisesRegex(ValueError, "alpha"):
+            assess(self.cfg, altered, {}, {})
+
+    def test_no_signal_on_insufficient_history(self):
+        self.assertIsNone(candidate("BTC/USDT", {"t": [], "open": [], "high": [],
+                                                   "low": [], "close": []}, {}, self.cfg))
+
+    def test_future_hourly_candle_does_not_change_signal(self):
+        prices = [100.0] * 490 + [98, 96, 94, 92, 90, 90.5]
+        bars = {"t": [i * BAR_MS for i in range(len(prices))], "open": prices,
+                "high": [p + 0.5 for p in prices], "low": [p - 0.5 for p in prices], "close": prices}
+        hourly = {"t": [i * HOUR_MS for i in range(130)], "close": [100.0] * 130}
+        cfg = dataclasses.replace(self.cfg, high_vol_percentile=100)
+        first = candidate("BTC/USDT", bars, hourly, cfg)
+        self.assertEqual(first["regime"], "RANGE")
+        hourly["close"][-1] = 10_000  # this hour has not closed at the decision time
+        self.assertEqual(first, candidate("BTC/USDT", bars, hourly, cfg))
+
+
+if __name__ == "__main__":
+    unittest.main()
