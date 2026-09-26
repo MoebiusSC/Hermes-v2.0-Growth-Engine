@@ -219,6 +219,20 @@ class Portfolio:
                 s["pending"] = max(eligible, key=lambda x: (x["strength"], x["asset"]))
         s["curve"].append({"ts": _day(ts).isoformat(), "equity": self.equity()})
 
+    def paper_fill_pending(self, price: float, ts: int) -> None:
+        """Paper only: use the current observed quote soon after decision, never an old bar open."""
+        signal = self.state["pending"]
+        if signal is None:
+            return
+        self.state["pending"] = None
+        if ts - signal["decision_ms"] > 60_000:
+            self.state["events"].append({"ts": ts, "event": "skip", "reason": "late_paper_fill"})
+            return
+        if price <= 0 or not math.isfinite(price):
+            self.state["halted"] = "invalid_market_data"
+            return
+        self._open(ts, {"open": price}, signal)
+
 
 def replay(cfg: GrowthConfig, candles: Mapping[str, dict], hourly: Mapping[str, dict],
            trade_after_ms: int = 0) -> Portfolio:

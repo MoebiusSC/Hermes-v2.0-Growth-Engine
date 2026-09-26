@@ -57,27 +57,28 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
             try:
                 feeds = {}
                 for asset in cfg.assets:
-                    bars = closed(await price.ohlcv(asset, "15m", 250), "15m", now)
-                    hours = closed(await price.ohlcv(asset, "1h", 250), "1h", now)
+                    raw = await price.ohlcv(asset, "15m", 250, fresh=True)
+                    bars = closed(raw, "15m", now)
+                    hours = closed(await price.ohlcv(asset, "1h", 250, fresh=True), "1h", now)
                     if len(bars["t"]) < 120 or len(hours["t"]) < 108:
                         raise RuntimeError(f"insufficient closed candles for {asset}")
-                    feeds[asset] = (bars, hours)
+                    feeds[asset] = (bars, hours, raw)
                 newest = {asset: feed[0]["t"][-1] for asset, feed in feeds.items()}
                 if len(set(newest.values())) != 1 or now - min(newest.values()) > 2 * BAR_MS:
                     book.state["halted"] = "stale_or_unsynchronized_market_data"
                 failures = 0
                 if not book.state["last_bar"]:
                     # First boot starts observing NOW, never invents fills in past candles.
-                    for asset, (bars, _) in feeds.items():
+                    for asset, (bars, _, _) in feeds.items():
                         book.state["last_bar"][asset] = bars["t"][-1]
                         book.state["marks"][asset] = bars["close"][-1]
                     book.state["curve"].append({"ts": dt.datetime.now(dt.timezone.utc).isoformat(),
                                                  "equity": book.equity()})
                 else:
-                    latest = max(bars["t"][-1] for bars, _ in feeds.values())
+                    latest = max(bars["t"][-1] for bars, _, _ in feeds.values())
                     for ts in range(min(book.state["last_bar"].values()) + BAR_MS, latest + 1, BAR_MS):
                         signals = []
-                        for asset, (bars, hours) in feeds.items():
+                        for asset, (bars, hours, _) in feeds.items():
                             if ts <= book.state["last_bar"].get(asset, -1):
                                 continue
                             try:
@@ -94,6 +95,16 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                             if signal:
                                 signals.append(signal)
                         book.decide(signals, ts + BAR_MS)
+                        if ts == latest and book.state["pending"]:
+                            chosen = book.state["pending"]["asset"]
+                            raw = feeds[chosen][2]
+                            # A forming next bar supplies the current observed quote. If missing or
+                            # late, skip the signal rather than assume a historical open fill.
+                            if raw["t"][-1] == ts + BAR_MS:
+                                book.paper_fill_pending(float(raw["close"][-1]), int(time.time() * 1000))
+                            else:
+                                book.state["pending"] = None
+                                book.state["halted"] = "missing_current_quote"
                 _save(book, state_path)
                 print(json.dumps({"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **report(book)}), flush=True)
             except Exception as exc:

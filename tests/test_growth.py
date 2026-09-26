@@ -40,6 +40,16 @@ class GrowthTests(unittest.TestCase):
         self.assertEqual(p.state["trades"][0]["reason"], "stop")
         self.assertLess(p.equity(), self.cfg.capital)
 
+    def test_paper_fill_uses_current_quote_and_rejects_late_fill(self):
+        p = Portfolio(self.cfg)
+        p.decide([self._signal()], BAR_MS)
+        p.paper_fill_pending(105, BAR_MS + 20_000)
+        self.assertGreater(p.state["position"]["entry"], 105)
+        q = Portfolio(self.cfg)
+        q.decide([self._signal()], BAR_MS)
+        q.paper_fill_pending(105, BAR_MS + 61_000)
+        self.assertIsNone(q.state["position"])
+
     def test_gap_latches_new_entries(self):
         p = Portfolio(self.cfg)
         p.on_bar("BTC/USDT", self._bar(), BAR_MS)

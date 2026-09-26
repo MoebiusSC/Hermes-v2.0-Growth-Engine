@@ -80,7 +80,7 @@ async def fetch(asset: str) -> dict:
 _ohlcv_cache: dict[tuple[str, str], tuple[float, dict]] = {}
 
 
-async def ohlcv(asset: str, tf: str, limit: int) -> dict:
+async def ohlcv(asset: str, tf: str, limit: int, fresh: bool = False) -> dict:
     """OHLCV candles {t, open, high, low, close} (t = bar start ms), from the exchange that last
     served this asset. Cached for a fraction of the bar length: indicators only use closed bars."""
     import time
@@ -89,7 +89,7 @@ async def ohlcv(asset: str, tf: str, limit: int) -> dict:
 
     key = (asset, tf)
     hit = _ohlcv_cache.get(key)
-    if hit and time.monotonic() - hit[0] < min(TF_SECONDS[tf] / 5, 300):
+    if hit and not fresh and time.monotonic() - hit[0] < min(TF_SECONDS[tf] / 5, 300):
         return hit[1]
     primary = env("EXCHANGE_ID", "binance")
     order = [primary] + [e for e in FALLBACK_EXCHANGES if e != primary]

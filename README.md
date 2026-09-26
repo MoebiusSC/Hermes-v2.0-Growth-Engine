@@ -8,7 +8,7 @@ Motor experimental de **paper trading cripto spot**, derivado de `MoebiusSC/herm
 - Clasifica velas cerradas de 1 h y 15 min como `RANGE`, `TREND_UP` o sin operación. Desactiva entradas en volatilidad alta y tendencias bajistas. Cruces RSI distintos generan señales de reversión y retroceso tendencial.
 - Compara señales simultáneas y elige como máximo una posición spot. Rechaza una oportunidad si la distancia al objetivo no supera dos veces el costo total estimado.
 - Calcula unidades con riesgo máximo de 0,5 % del saldo por operación, exposición máxima de 50 %, orden mínima configurable y comisión, deslizamiento y spread simulados. Los límites de pérdida diaria, semanal y drawdown se enclavan; requieren revisión humana del estado antes de reanudar.
-- Genera decisiones al cierre de una vela y simula la entrada a la apertura de la siguiente. Para un stop y objetivo tocados en la misma vela, supone primero el stop; los gaps pueden empeorar el precio.
+- Genera decisiones al cierre de una vela. El backtest simula la apertura siguiente; el worker paper usa la cotización observada dentro de los 60 segundos posteriores al cierre o descarta la señal. Para un stop y objetivo tocados en la misma vela, supone primero el stop; los gaps pueden empeorar el precio.
 - Guarda saldo, posiciones, señales pendientes, eventos, operaciones y curva de equity en un archivo JSON escrito atómicamente. Una pausa de datos o tres fallos consecutivos detienen nuevas entradas.
 - Evalúa una cartera compartida con los mismos métodos de señales, tamaño y fills. El laboratorio compara cambios de parámetros alpha en cuatro ventanas, tres activos y costos duplicados; **solo emite una recomendación para revisión manual**.
 
