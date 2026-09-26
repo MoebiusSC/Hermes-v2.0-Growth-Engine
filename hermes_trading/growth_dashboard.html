@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hermes v2 · Growth Engine</title>
+  <style>
+    :root { color-scheme: dark; --bg:#071019; --surface:#101c28; --surface2:#152331; --line:#263746;
+      --ink:#ecf6f5; --muted:#92a8b4; --teal:#70e1cd; --red:#ff8792; --amber:#f4c879; }
+    * { box-sizing:border-box } body { margin:0; background:radial-gradient(circle at 15% -20%,#1c3440 0,transparent 38%),var(--bg);
+      color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif; }
+    .shell { max-width:1320px; margin:auto; padding:30px 26px 72px } header { display:flex; justify-content:space-between;
+      align-items:center; gap:16px; margin-bottom:30px; flex-wrap:wrap } .brand { display:flex; align-items:center; gap:16px }
+    .mark { width:43px; height:43px; display:grid; place-items:center; border:1px solid #398d86; border-radius:13px;
+      color:var(--teal); font-size:27px; font-weight:600; background:#112e31 } h1 { font-size:22px; margin:0; letter-spacing:-.045em }
+    .sub { color:var(--muted); font-size:12px; letter-spacing:.12em; text-transform:uppercase; margin-top:3px }
+    .top-status { display:flex; align-items:center; gap:9px; border:1px solid var(--line); border-radius:999px;
+      padding:8px 12px; color:var(--muted); font-size:12px; background:#0d1923 }
+    .dot { width:8px; height:8px; border-radius:50%; background:var(--teal); box-shadow:0 0 11px var(--teal) }
+    .dot.warn { background:var(--amber); box-shadow:0 0 11px var(--amber) }.dot.bad { background:var(--red); box-shadow:0 0 11px var(--red) }
+    .intro { display:flex; justify-content:space-between; gap:15px; align-items:end; margin:0 0 23px; flex-wrap:wrap }
+    .eyebrow { color:var(--teal); font-size:11px; text-transform:uppercase; letter-spacing:.18em; font-weight:700 }
+    h2 { font-size:32px; line-height:1.1; letter-spacing:-.06em; margin:7px 0 4px; font-weight:650 }
+    .note { color:var(--muted); font-size:13px; line-height:1.5 } .chip { color:var(--teal); border:1px solid #315e5c;
+      background:#0d292c; padding:6px 10px; border-radius:6px; font-size:11px; font-weight:700; letter-spacing:.1em }
+    .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:13px; margin-bottom:13px }
+    .card { background:linear-gradient(145deg,var(--surface),#0c1822); border:1px solid var(--line); border-radius:15px;
+      box-shadow:0 12px 35px #0002; padding:20px; min-width:0 } .label { color:var(--muted); text-transform:uppercase;
+      letter-spacing:.1em; font-size:10px; font-weight:700 } .value { font-variant-numeric:tabular-nums; font-size:27px;
+      letter-spacing:-.055em; margin:15px 0 4px; font-weight:650; white-space:nowrap }
+    .small { font-size:12px; color:var(--muted) } .positive { color:var(--teal) }.negative { color:var(--red) }
+    .grid { display:grid; grid-template-columns:minmax(0,1.8fr) minmax(300px,1fr); gap:13px; margin-bottom:13px }
+    .card-head { display:flex; align-items:start; justify-content:space-between; gap:12px; margin-bottom:16px }
+    h3 { margin:0; font-size:17px; font-weight:620; letter-spacing:-.025em }.chart { width:100%; height:245px; display:block; overflow:visible }
+    .axis { display:flex; justify-content:space-between; color:#728c9a; font-size:11px; margin-top:10px }
+    .row { display:flex; justify-content:space-between; gap:18px; border-bottom:1px solid var(--line); padding:12px 0; font-size:13px }
+    .row:last-child { border:0 }.row span:first-child { color:var(--muted) }.row strong { font-weight:590; text-align:right; font-variant-numeric:tabular-nums }
+    .table-wrap { overflow:auto } table { width:100%; border-collapse:collapse; font-size:12px; min-width:500px }
+    th { color:var(--muted); font-weight:650; text-transform:uppercase; letter-spacing:.08em; font-size:10px; text-align:left;
+      padding:0 10px 13px 0; border-bottom:1px solid var(--line) } td { padding:14px 10px 14px 0;
+      border-bottom:1px solid #20303c; font-variant-numeric:tabular-nums } tr:last-child td { border-bottom:0 }
+    .empty { color:var(--muted); font-size:13px; padding:30px 0 } .banner { display:none; border:1px solid #664a3d;
+      background:#352723; color:#ffd9bd; border-radius:10px; padding:13px 16px; margin-bottom:14px; font-size:13px }
+    footer { color:#6f8795; font-size:11px; margin-top:23px; line-height:1.6 }
+    @media(max-width:900px){.metrics{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}
+    @media(max-width:530px){.shell{padding:20px 14px 40px}.metrics{gap:9px}.card{padding:16px}.value{font-size:23px}h2{font-size:26px}}
+  </style>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<div class="shell">
+  <header><div class="brand"><div class="mark">H</div><div><h1>Hermes <span style="color:var(--teal)">v2.0</span></h1><div class="sub">Growth Engine / Control de cartera</div></div></div>
+    <div class="top-status"><span class="dot" id="status-dot"></span><span id="status">Conectando...</span></div></header>
+  <div class="intro"><div><div class="eyebrow">Vista de operación · Cripto spot</div><h2>Panel de rendimiento</h2><div class="note">Una cuenta compartida. Una oportunidad a la vez. Datos simulados en USDT.</div></div><span class="chip">PAPER ONLY</span></div>
+  <div class="banner" id="banner"></div>
+  <section class="metrics" aria-label="Métricas principales">
+    <div class="card"><div class="label">Equity actual</div><div class="value" id="equity">—</div><div class="small" id="capital">Capital inicial: —</div></div>
+    <div class="card"><div class="label">Retorno acumulado</div><div class="value" id="return">—</div><div class="small">Incluye posiciones abiertas</div></div>
+    <div class="card"><div class="label">Drawdown máximo</div><div class="value" id="drawdown">—</div><div class="small">Curva mark-to-market</div></div>
+    <div class="card"><div class="label">Operaciones cerradas</div><div class="value" id="trades-count">—</div><div class="small" id="win-rate">Tasa de acierto: —</div></div>
+  </section>
+  <section class="grid">
+    <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Evolución del capital</div><h3>Curva de equity</h3></div><span class="small" id="chart-range"></span></div>
+      <svg class="chart" id="chart" viewBox="0 0 700 245" role="img" aria-label="Curva de capital"></svg><div class="axis"><span id="chart-start">—</span><span id="chart-end">—</span></div></div>
+    <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Estado de operación</div><h3>Posición y riesgo</h3></div></div>
+      <div class="row"><span>Posición</span><strong id="position">Sin posición</strong></div><div class="row"><span>Entrada / Stop</span><strong id="entry-stop">—</strong></div>
+      <div class="row"><span>Objetivo</span><strong id="target">—</strong></div><div class="row"><span>Efectivo disponible</span><strong id="cash">—</strong></div>
+      <div class="row"><span>Riesgo / operación</span><strong id="risk">—</strong></div><div class="row"><span>Exposición máxima</span><strong id="exposure">—</strong></div>
+      <div class="row"><span>Profit factor</span><strong id="pf">—</strong></div></div>
+  </section>
+  <section class="grid"><div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Historial</div><h3>Operaciones recientes</h3></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Fecha UTC</th><th>Activo</th><th>Régimen</th><th>Salida</th><th>Resultado</th></tr></thead><tbody id="trade-rows"></tbody></table></div></div>
+    <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Monitoreo</div><h3>Últimos eventos</h3></div></div><div id="events"></div></div></section>
+  <footer><span id="updated">Actualización: —</span><br>Simulación paper con velas de 15 min. Los stops se evalúan al cierre; este panel no representa protección del lado del exchange.</footer>
+</div>
+</body></html>

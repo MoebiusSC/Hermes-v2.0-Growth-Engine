@@ -9,4 +9,5 @@ COPY growth.json ./growth.json
 RUN uv sync --frozen
 ENV HERMES_TRADING_MODE=paper
 ENV HERMES_GROWTH_STATE=/app/state/growth/account.json
-CMD ["uv", "run", "python", "-m", "hermes_trading.growth_run", "paper"]
+EXPOSE 8080
+CMD ["uv", "run", "python", "-m", "hermes_trading.growth_web"]

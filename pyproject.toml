@@ -19,4 +19,4 @@ dependencies = [
 packages = ["hermes_trading", "hermes_trading.adapters"]
 
 [tool.setuptools.package-data]
-hermes_trading = ["dashboard.html"]
+hermes_trading = ["dashboard.html", "growth_dashboard.html", "growth_dashboard.js"]

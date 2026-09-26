@@ -42,4 +42,4 @@ La puerta de salida de un mes paper requiere analizar su curva, operaciones, fal
 
 ## Despliegue
 
-La imagen `Dockerfile` inicia **solo** el worker v2 paper. Monte un volumen persistente en `/app/state`; vea [docs/RAILWAY.md](docs/RAILWAY.md). Este repositorio independiente no altera el deployment de `hermes-trading` original.
+La imagen `Dockerfile` inicia el worker v2 paper y un dashboard web de solo lectura, protegido con `HERMES_DASHBOARD_PASSWORD` (mínimo 16 bytes). La API `/api/state` también requiere la contraseña; `/health` es público para la sonda de Railway. Monte un volumen persistente en `/app/state`; vea [docs/RAILWAY.md](docs/RAILWAY.md). Este repositorio independiente no altera el deployment de `hermes-trading` original.
