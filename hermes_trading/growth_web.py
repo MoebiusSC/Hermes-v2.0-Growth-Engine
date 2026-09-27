@@ -55,6 +55,8 @@ def snapshot(path: Path) -> dict:
         "trades": s["trades"][-100:][::-1],
         "events": s["events"][-100:][::-1],
         "last_bar": s["last_bar"],
+        "optimizer": s.get("optimizer", {"enabled": False}),
+        "alpha": {key: getattr(cfg, key) for key in ("range_rsi", "trend_rsi", "target_r", "stop_atr")},
     }
 
 

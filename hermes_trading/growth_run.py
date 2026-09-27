@@ -35,28 +35,90 @@ def _load_config(path: Path) -> GrowthConfig:
     return GrowthConfig(**data)
 
 
-def _save(book: Portfolio, path: Path) -> None:
+def _save(book: Portfolio, path: Path, baseline: GrowthConfig | None = None) -> None:
     # Atomic state, separate JSONL audit copies can be derived from events/trades/curve.
-    atomic_write(path, json.dumps({"config": dataclasses.asdict(book.cfg), "state": book.state}, indent=2))
+    atomic_write(path, json.dumps({"baseline_config": dataclasses.asdict(baseline or book.cfg),
+                                   "config": dataclasses.asdict(book.cfg), "state": book.state}, indent=2))
+
+
+def _restore(cfg: GrowthConfig, state_path: Path) -> Portfolio:
+    if not state_path.exists():
+        return Portfolio(cfg)
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    if saved.get("baseline_config", saved["config"]) != json.loads(json.dumps(dataclasses.asdict(cfg))):
+        raise RuntimeError("baseline config changed while account has state; review/migrate explicitly")
+    active = GrowthConfig(**{**saved["config"], "assets": tuple(saved["config"]["assets"])})
+    if any(getattr(active, field) != getattr(cfg, field) for field in
+           ("capital", "assets", "risk_per_trade", "max_exposure", "daily_loss", "weekly_loss",
+            "monthly_drawdown", "min_order_usd", "fee", "slippage", "spread")):
+        raise RuntimeError("saved risk or cost config differs from baseline")
+    return Portfolio(active, saved["state"])
 
 
 async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
     from .adapters import price
+    from . import growth_optimizer as optimizer
 
-    if state_path.exists():
-        saved = json.loads(state_path.read_text(encoding="utf-8"))
-        if saved["config"] != json.loads(json.dumps(dataclasses.asdict(cfg))):
-            raise RuntimeError("config changed while account has state; review/migrate state explicitly")
-        book = Portfolio(cfg, saved["state"])
-    else:
-        book = Portfolio(cfg)
+    enabled = os.environ.get("HERMES_AUTOTUNE", "off").lower() == "on"
+    book = _restore(cfg, state_path)
+    meta = optimizer.initialise(book.state, int(time.time() * 1000))
+    meta["enabled"] = enabled
+    task: asyncio.Task | None = None
+
+    async def autotune(now_ms: int) -> None:
+        nonlocal task
+        if not enabled or once:
+            return
+        verdict = optimizer.forward_verdict(meta, book.state, book.equity(), now_ms)
+        if verdict:
+            active_change = meta.pop("active_change")
+            if verdict == "revert":
+                previous = active_change["previous_config"]
+                book.cfg = GrowthConfig(**{**previous, "assets": tuple(previous["assets"])})
+            optimizer.record(meta, {"event": verdict, "change": active_change["change"]}, now_ms)
+            book.state["events"].append({"ts": now_ms, "event": f"optimizer_{verdict}",
+                                         "change": active_change["change"]})
+            meta["next_due_ms"] = now_ms + optimizer.INTERVAL_MS
+        if task and task.done():
+            try:
+                result = task.result()
+            except Exception as exc:
+                result = {"accepted": False, "reason": f"research_error:{type(exc).__name__}"}
+            task = None
+            meta["candidate_index"] += 1
+            meta["next_due_ms"] = now_ms + (optimizer.INTERVAL_MS if result["accepted"] else optimizer.RETRY_MS)
+            if result["accepted"] and not (book.state["position"] or book.state["pending"] or book.state["halted"]):
+                trial, _ = optimizer.candidate_config(book.cfg, meta["candidate_index"] - 1)
+                meta["active_change"] = {"previous_config": dataclasses.asdict(book.cfg),
+                                         "change": result["change"], "applied_ms": now_ms,
+                                         "trade_count": len(book.state["trades"]),
+                                         "equity_at_apply": book.equity()}
+                book.cfg = trial
+                result["event"] = "applied"
+            elif result["accepted"]:
+                result = {**result, "accepted": False, "event": "deferred", "reason": "not_flat_or_halted"}
+            else:
+                result["event"] = "rejected"
+            optimizer.record(meta, result, now_ms)
+            book.state["events"].append({"ts": now_ms, "event": f"optimizer_{result['event']}",
+                                         "reason": result["reason"], "change": result.get("change")})
+            print(json.dumps({"optimizer": result["event"], "reason": result["reason"],
+                              "change": result.get("change")}), flush=True)
+        if (task is None and meta.get("active_change") is None and
+                now_ms >= meta["next_due_ms"] and
+                not (book.state["position"] or book.state["pending"] or book.state["halted"])):
+            task = asyncio.create_task(asyncio.to_thread(optimizer.evaluate, book.cfg,
+                                                         meta["candidate_index"]))
+            meta["running"] = True
+        else:
+            meta["running"] = task is not None
     try:
         failures = 0
         while True:
             now = time.time() * 1000
             try:
                 feeds = {}
-                for asset in cfg.assets:
+                for asset in book.cfg.assets:
                     raw = await price.ohlcv(asset, "15m", 250, fresh=True)
                     bars = closed(raw, "15m", now)
                     hours = closed(await price.ohlcv(asset, "1h", 250, fresh=True), "1h", now)
@@ -91,7 +153,7 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                             bar = {k: bars[k][i] for k in ("open", "high", "low", "close")}
                             book.on_bar(asset, bar, ts)
                             sub = {k: bars[k][max(0, i - 160):i + 1] for k in ("t", "open", "high", "low", "close")}
-                            signal = candidate(asset, sub, hours, cfg)
+                            signal = candidate(asset, sub, hours, book.cfg)
                             if signal:
                                 signals.append(signal)
                         book.decide(signals, ts + BAR_MS)
@@ -105,14 +167,15 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                             else:
                                 book.state["pending"] = None
                                 book.state["halted"] = "missing_current_quote"
-                _save(book, state_path)
+                await autotune(int(now))
+                _save(book, state_path, cfg)
                 print(json.dumps({"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **report(book)}), flush=True)
             except Exception as exc:
                 failures += 1
                 if failures >= 3:
                     book.state["halted"] = "consecutive_data_errors"
                 book.state["events"].append({"ts": int(now), "event": "data_error", "error": type(exc).__name__})
-                _save(book, state_path)
+                _save(book, state_path, cfg)
                 print(f"paper data error ({failures}): {type(exc).__name__}: {exc}", flush=True)
             if once:
                 return

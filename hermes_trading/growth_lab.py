@@ -11,7 +11,6 @@ import statistics
 from pathlib import Path
 
 from .growth import GrowthConfig, replay
-from .growth_run import _load_config, report
 
 
 def _window(data: dict, start: int, end: int, warmup: int) -> dict:
@@ -21,6 +20,7 @@ def _window(data: dict, start: int, end: int, warmup: int) -> dict:
 
 def assess(base: GrowthConfig, trial: GrowthConfig, candles: dict, hourly: dict,
            windows: int = 4, window_days: int = 90) -> dict:
+    from .growth_run import report
     if base.assets != trial.assets or base.capital != trial.capital:
         raise ValueError("both configurations must use the same assets and capital")
     # Risk and cost parameters are owner controlled; experiments only adjust alpha.
@@ -78,6 +78,7 @@ def _iso(ms: int) -> str:
 
 def main() -> None:
     from .backtest import history
+    from .growth_run import _load_config
 
     parser = argparse.ArgumentParser(description="Compare a prespecified alpha change; never auto-apply")
     parser.add_argument("--baseline", type=Path, default=Path("growth.json"))

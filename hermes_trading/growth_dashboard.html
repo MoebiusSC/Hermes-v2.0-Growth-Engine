@@ -41,6 +41,10 @@
       border-bottom:1px solid #20303c; font-variant-numeric:tabular-nums } tr:last-child td { border-bottom:0 }
     .empty { color:var(--muted); font-size:13px; padding:30px 0 } .banner { display:none; border:1px solid #664a3d;
       background:#352723; color:#ffd9bd; border-radius:10px; padding:13px 16px; margin-bottom:14px; font-size:13px }
+    .file-label { display:inline-block; cursor:pointer; padding:9px 12px; border:1px solid #315e5c; border-radius:7px;
+      background:#0d292c; color:var(--teal); font-size:12px; margin-top:12px }
+    .file-label input { position:absolute; width:1px; height:1px; opacity:0 }
+    a { color:var(--teal) }
     footer { color:#6f8795; font-size:11px; margin-top:23px; line-height:1.6 }
     @media(max-width:900px){.metrics{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}
     @media(max-width:530px){.shell{padding:20px 14px 40px}.metrics{gap:9px}.card{padding:16px}.value{font-size:23px}h2{font-size:26px}}
@@ -71,6 +75,22 @@
   <section class="grid"><div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Historial</div><h3>Operaciones recientes</h3></div></div>
     <div class="table-wrap"><table><thead><tr><th>Fecha UTC</th><th>Activo</th><th>Régimen</th><th>Salida</th><th>Resultado</th></tr></thead><tbody id="trade-rows"></tbody></table></div></div>
     <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Monitoreo</div><h3>Últimos eventos</h3></div></div><div id="events"></div></div></section>
+  <section class="grid">
+    <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Investigación cuantitativa</div><h3>Optimización automática</h3></div></div>
+      <div class="row"><span>Estado</span><strong id="optimizer-status">—</strong></div>
+      <div class="row"><span>Próxima evaluación</span><strong id="optimizer-next">—</strong></div>
+      <div class="row"><span>Última decisión</span><strong id="optimizer-last">—</strong></div>
+      <div class="row"><span>Parámetros activos</span><strong id="optimizer-alpha">—</strong></div>
+      <p class="note">Un candidato acotado por ciclo. Cuatro ventanas históricas de 30 días, costos duplicados y confirmación reciente. Riesgo y capital permanecen fijos. Los cambios se auditan y tienen una evaluación posterior en paper.</p>
+    </div>
+    <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Mismo período · retornos porcentuales</div><h3>Hermes vs. Hermes V2</h3></div></div>
+      <p class="note">Abre <a href="https://hermes-trading-production-c90e.up.railway.app/api/state" target="_blank" rel="noopener noreferrer">el JSON del Hermes original</a> tras iniciar sesión allí; guárdalo y cárgalo aquí. El archivo se procesa en este navegador y no se envía al servidor.</p>
+      <label class="file-label">Cargar JSON de Hermes <input id="original-file" type="file" accept=".json,application/json"></label>
+      <p class="small" id="comparison-status">Esperando archivo para comparar la cartera cripto original con V2.</p>
+      <div class="table-wrap"><table><thead><tr><th>Motor</th><th>Retorno</th><th>Drawdown máx.</th><th>Muestras</th></tr></thead><tbody id="comparison-rows"></tbody></table></div>
+      <p class="note">Las carteras, el capital, los activos y las reglas son distintos. Igualar fechas y porcentajes permite observar resultados, pero no demuestra cuál algoritmo es mejor.</p>
+    </div>
+  </section>
   <footer><span id="updated">Actualización: —</span><br>Simulación paper con velas de 15 min. Los stops se evalúan al cierre; este panel no representa protección del lado del exchange.</footer>
 </div>
 </body></html>

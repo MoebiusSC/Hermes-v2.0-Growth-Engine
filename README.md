@@ -10,7 +10,7 @@ Motor experimental de **paper trading cripto spot**, derivado de `MoebiusSC/herm
 - Calcula unidades con riesgo máximo de 0,5 % del saldo por operación, exposición máxima de 50 %, orden mínima configurable y comisión, deslizamiento y spread simulados. Los límites de pérdida diaria, semanal y drawdown se enclavan; requieren revisión humana del estado antes de reanudar.
 - Genera decisiones al cierre de una vela. El backtest simula la apertura siguiente; el worker paper usa la cotización observada dentro de los 60 segundos posteriores al cierre o descarta la señal. Para un stop y objetivo tocados en la misma vela, supone primero el stop; los gaps pueden empeorar el precio.
 - Guarda saldo, posiciones, señales pendientes, eventos, operaciones y curva de equity en un archivo JSON escrito atómicamente. Una pausa de datos o tres fallos consecutivos detienen nuevas entradas.
-- Evalúa una cartera compartida con los mismos métodos de señales, tamaño y fills. El laboratorio compara cambios de parámetros alpha en cuatro ventanas, tres activos y costos duplicados; **solo emite una recomendación para revisión manual**.
+- Evalúa una cartera compartida con los mismos métodos de señales, tamaño y fills. El laboratorio compara cambios de parámetros alpha en cuatro ventanas, tres activos y costos duplicados. El worker puede usar ese filtro para aplicar **un solo cambio acotado** de forma autónoma cuando `HERMES_AUTOTUNE=on`; nunca ajusta capital, riesgo ni costos.
 
 ## Inicio local
 
@@ -33,6 +33,14 @@ uv run python -m hermes_trading.growth_lab --baseline growth.json --candidate ca
 ```
 
 El laboratorio exige al menos 30 operaciones del candidato, tres activos operados, varios períodos positivos, mejora mediana frente a la base, drawdown similar y supervivencia con costos duplicados. Un resultado favorable **no prueba** que la ventaja vaya a persistir. Los datos históricos se descargan de fuentes públicas; compruebe cobertura y liquidez antes de interpretar resultados.
+
+## Optimización automática y comparación
+
+Con `HERMES_AUTOTUNE=on`, la primera evaluación comienza aproximadamente una hora después de arrancar. Después prueba **un candidato predefinido por ciclo** con un cambio pequeño en RSI, stop ATR u objetivo. Compara la cartera completa durante cuatro ventanas cronológicas de 30 días con igual capital y costos, comprueba las tres monedas, un mínimo de 30 operaciones, el drawdown, costos duplicados y una mejora de al menos 0,25 puntos porcentuales con cinco operaciones en la ventana más reciente. Exige velas cerradas, cobertura completa y ausencia de huecos. Si aprueba, aplica el cambio solo estando sin posición, sin señal pendiente y sin pausa de riesgo. El intervalo normal es de siete días; un rechazo o error de datos permite otro intento al día siguiente con el siguiente candidato. Las investigaciones corren en segundo plano para no bloquear el worker.
+
+La configuración base (`growth.json`) y todos los parámetros de capital, riesgo y costos quedan fijos en el estado. Las decisiones y sus motivos quedan en `account.json` y el dashboard. Después de 14 días y 10 operaciones cerradas bajo un cambio aplicado, el worker revierte los parámetros anteriores si la equity cae más de 0,5 % respecto del momento de aplicación; de lo contrario confirma el cambio. Esa pérdida posterior es un freno conservador, **no una prueba causal** de que el cambio fuese perjudicial. Una pausa por límites de riesgo nunca se libera automáticamente. El estudio histórico puede concluir que ningún candidato supera la base, por lo que activar la optimización no garantiza cambios ni rentabilidad.
+
+El dashboard permite cargar en el navegador el JSON de `/api/state` del Hermes original para comparar **solo su cartera cripto** con V2 en el período de fechas común. Muestra retorno porcentual y máximo drawdown; el archivo original no sale del navegador. Hermes original y V2 tienen diferentes activos, capitales y reglas, por lo que la comparación observacional no demuestra superioridad estadística. Para una comparación experimental estricta harían falta iguales activos, períodos, costos y capitales en un backtest común.
 
 ## Límites antes de usar dinero real
 
