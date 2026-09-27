@@ -3,6 +3,44 @@ const money = value => Number.isFinite(Number(value)) ? `${Number(value).toFixed
 const pct = value => Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(2)}%` : '—';
 const utc = ms => new Date(ms).toLocaleString('es-BO', {timeZone:'UTC',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
 const number = value => Number.isFinite(Number(value)) ? Number(value).toLocaleString('es-BO',{maximumFractionDigits:4}) : '—';
+let originalExport=null, currentV2=null;
+
+function series(points, valueOf) {
+  return (points||[]).map(p=>({ts:Date.parse(p.ts),equity:Number(valueOf(p))}))
+    .filter(p=>Number.isFinite(p.ts)&&Number.isFinite(p.equity)&&p.equity>0).sort((a,b)=>a.ts-b.ts);
+}
+
+function periodMetrics(points) {
+  const initial=points[0].equity, last=points.at(-1).equity;
+  let peak=initial, drawdown=0;
+  for (const p of points) {peak=Math.max(peak,p.equity);drawdown=Math.max(drawdown,1-p.equity/peak);}
+  return {return:last/initial-1,drawdown};
+}
+
+function renderComparison() {
+  const tbody=$('comparison-rows');tbody.replaceChildren();
+  if (!originalExport||!currentV2) return;
+  const old=series(originalExport.equity,p=>p.crypto?.realized+p.crypto?.unrealized);
+  const modern=series(currentV2.curve,p=>p.equity);
+  if (old.length<2||modern.length<2) {$('comparison-status').textContent='Faltan puntos de equity cripto para comparar.';return;}
+  const start=Math.max(old[0].ts,modern[0].ts),end=Math.min(old.at(-1).ts,modern.at(-1).ts);
+  const a=old.filter(p=>p.ts>=start&&p.ts<=end),b=modern.filter(p=>p.ts>=start&&p.ts<=end);
+  if (a.length<2||b.length<2) {$('comparison-status').textContent='No hay un período común con suficientes datos.';return;}
+  $('comparison-status').textContent=`Período común: ${utc(start)} – ${utc(end)} UTC`;
+  for (const [label,points] of [['Hermes · cripto',a],['Hermes V2',b]]) {
+    const m=periodMetrics(points),row=tbody.insertRow();
+    for (const value of [label,pct(m.return),pct(m.drawdown),String(points.length)]) row.insertCell().textContent=value;
+  }
+}
+
+$('original-file').addEventListener('change',async event=>{
+  const file=event.target.files?.[0];if(!file)return;
+  try {
+    const data=JSON.parse(await file.text());
+    if (!Array.isArray(data.equity)) throw new Error('El archivo no contiene la curva equity de Hermes.');
+    originalExport=data;renderComparison();
+  } catch (error) {originalExport=null;$('comparison-rows').replaceChildren();$('comparison-status').textContent=String(error.message);}
+});
 
 function line(svg, points, min, max, color) {
   const ns = 'http://www.w3.org/2000/svg';
@@ -78,6 +116,12 @@ function render(data) {
   $('cash').textContent=money(m.cash);$('risk').textContent=pct(data.risk.risk_per_trade);
   $('exposure').textContent=pct(data.risk.max_exposure);$('pf').textContent=m.profit_factor===null?'—':number(m.profit_factor);
   $('updated').textContent=`Actualizado: ${utc(data.updated_at*1000)} UTC`;
+  const opt=data.optimizer||{};
+  $('optimizer-status').textContent=!opt.enabled?'Desactivado':opt.running?'Evaluando histórico':opt.active_change?'Cambio en observación':'Activo · esperando ciclo';
+  $('optimizer-next').textContent=opt.next_due_ms?`${utc(opt.next_due_ms)} UTC`:'—';
+  $('optimizer-last').textContent=opt.last_decision?`${opt.last_decision.event||'evaluación'} · ${opt.last_decision.reason||opt.last_decision.change?.field||'—'}`:'Aún sin evaluación';
+  $('optimizer-alpha').textContent=data.alpha?`RSI rango ${data.alpha.range_rsi} · RSI tendencia ${data.alpha.trend_rsi} · objetivo ${data.alpha.target_r}R · stop ${data.alpha.stop_atr} ATR`:'—';
+  currentV2=data;renderComparison();
   drawCurve(data.curve);renderRows(data);
 }
 
