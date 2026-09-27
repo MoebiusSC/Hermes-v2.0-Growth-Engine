@@ -46,6 +46,7 @@
     .file-label input { position:absolute; width:1px; height:1px; opacity:0 }
     .manual-form { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; align-items:end }
     .manual-form label { display:grid; gap:6px; color:var(--muted); font-size:12px }
+    .manual-form [hidden] { display:none }
     .manual-form input,.manual-form select { width:100%; background:#0b1923; border:1px solid #395263;
       color:var(--ink); border-radius:7px; padding:10px; min-height:40px; font:inherit }
     .manual-form button { background:#0d292c; border:1px solid #398d86; border-radius:7px;
@@ -87,12 +88,17 @@
     <div class="table-wrap"><table><thead><tr><th>Fecha UTC</th><th>Activo</th><th>Régimen</th><th>Salida</th><th>Resultado</th></tr></thead><tbody id="trade-rows"></tbody></table></div></div>
     <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Monitoreo</div><h3>Últimos eventos</h3></div></div><div id="events"></div></div></section>
   <section class="card" style="margin-bottom:13px" aria-label="Operación manual simulada">
-    <div class="card-head"><div><div class="label" style="margin-bottom:6px">Simulación local o Alpaca paper compartida</div><h3>Comprar y vender manualmente</h3></div><span class="chip">CRIPTO + ETF · PAPER</span></div>
+    <div class="card-head"><div><div class="label" style="margin-bottom:6px">Simulación local o Alpaca paper compartida</div><h3>Comprar y vender manualmente</h3></div><span class="chip">CRIPTO + ACCIONES + ETF · PAPER</span></div>
     <p class="note">El bot y las órdenes manuales usan la misma cuenta Alpaca paper: comparten efectivo y equity. Cada activo pertenece al bot o al operador manual, nunca a ambos a la vez. Las órdenes manuales no alteran la cartera interna usada para comparar Hermes y V2.</p>
     <div class="manual-summary"><span class="small">Efectivo: <strong id="manual-cash">—</strong></span><span class="small">Valor estimado: <strong id="manual-equity">—</strong></span></div>
     <form id="manual-form" class="manual-form">
       <label>Cuenta<select id="manual-mode"><option value="local">Simulación local</option><option value="alpaca">Alpaca paper</option></select></label>
-      <label>Activo<select id="manual-asset" required><option value="BTC/USDT">BTC/USDT</option><option value="ETH/USDT">ETH/USDT</option><option value="SOL/USDT">SOL/USDT</option><option value="SPY">SPY · ETF</option><option value="VOO">VOO · ETF</option><option value="QQQ">QQQ · ETF</option></select></label>
+      <label>Activo<select id="manual-asset" required>
+        <optgroup label="Criptomonedas"><option value="BTC/USDT">BTC</option><option value="ETH/USDT">ETH</option><option value="SOL/USDT">SOL</option><option value="DOGE/USDT">DOGE</option><option value="BNB/USDT">BNB</option><option value="XRP/USDT">XRP</option><option value="LINK/USDT">LINK</option><option value="AVAX/USDT">AVAX</option><option value="ADA/USDT">ADA</option><option value="SUI/USDT">SUI</option><option value="LTC/USDT">LTC</option><option value="PAXG/USDT">PAXG</option></optgroup>
+        <optgroup label="ETF"><option value="SPY">SPY</option><option value="VOO">VOO</option><option value="QQQ">QQQ</option></optgroup>
+        <optgroup label="Acciones"><option value="AAPL">AAPL · Apple</option><option value="MSFT">MSFT · Microsoft</option><option value="NVDA">NVDA · Nvidia</option><option value="AMZN">AMZN · Amazon</option><option value="GOOGL">GOOGL · Alphabet</option><option value="META">META · Meta</option><option value="TSLA">TSLA · Tesla</option><option value="AMD">AMD</option><option value="KO">KO · Coca-Cola</option><option value="JPM">JPM · JPMorgan</option><option value="__stock__">Otra acción de EE. UU. (ticker)</option></optgroup>
+      </select></label>
+      <label id="manual-custom-label" hidden>Ticker de acción<input id="manual-custom-ticker" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Ej.: DIS, BRK.B"></label>
       <label>Operación<select id="manual-side"><option value="buy">Comprar</option><option value="sell">Vender</option></select></label>
       <label id="manual-amount-label">Monto total en USD<input id="manual-amount" type="number" min="0.00000001" step="any" required inputmode="decimal" placeholder="Ej.: 10"></label>
       <button id="manual-submit" type="submit" disabled>Revisar orden paper</button>
@@ -103,7 +109,7 @@
     <div class="table-wrap"><table><thead><tr><th>Activo</th><th>Unidades</th><th>Costo</th><th>Valor estimado</th><th>P/L no realizado</th></tr></thead><tbody id="manual-positions"></tbody></table></div>
     <h3 style="margin-top:18px">Órdenes manuales recientes</h3>
     <div class="table-wrap"><table><thead><tr><th>Fecha UTC</th><th>Orden</th><th>Activo</th><th>Unidades / precio</th><th>Resultado realizado</th></tr></thead><tbody id="manual-orders"></tbody></table></div>
-    <p class="note" id="manual-rules">Simulación local: compra mínima 5 USD. Para vender, introduce unidades de la tabla. Solo se permiten compras con efectivo y ventas de unidades propias.</p>
+    <p class="note" id="manual-rules">Simulación local: compra mínima 5 USD. Para vender, introduce unidades de la tabla. Acciones y ETF operan en horario regular de Nueva York; las criptomonedas requieren cotización reciente.</p>
   </section>
   <section class="card" style="margin-bottom:13px"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Cuenta paper compartida · bot solo cripto</div><h3>Bot V2 en Alpaca paper</h3></div></div>
     <div class="row"><span>Conexión</span><strong id="alpaca-auto-status">Pendiente</strong></div>

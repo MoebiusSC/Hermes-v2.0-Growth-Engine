@@ -141,6 +141,9 @@ const manualUnits = value => Number(value).toFixed(12).replace(/\.?0+$/,'');
 let manualAccount=null, manualQuote=null, manualBusy=false;
 const paperMode=()=>$('manual-mode').value==='alpaca';
 const manualStateUrl=()=>paperMode()?'/api/alpaca/manual/state':'/api/manual/state';
+const selectedManualAsset=()=>$('manual-asset').value==='__stock__'
+  ? $('manual-custom-ticker').value.trim().toUpperCase():$('manual-asset').value;
+const manualCanTrade=()=>Boolean(manualQuote?.tradable&&(!paperMode()||manualQuote.broker_available));
 
 function manualRow(tbody, values) {
   const row=tbody.insertRow();
@@ -181,36 +184,52 @@ async function loadManual() {
       $('manual-message').textContent=data.message||'Alpaca paper pendiente de configuración';return;
     }
     renderManual(data);
-    $('manual-submit').disabled=manualBusy||!manualQuote?.tradable||Boolean(data.pending||data.halted);
+    $('manual-submit').disabled=manualBusy||!manualCanTrade()||Boolean(data.pending||data.halted);
     if (data.halted) $('manual-message').textContent=`Alpaca paper detenido: ${data.halted}`;
     if (data.pending) $('manual-message').textContent='Orden pendiente de ejecución o reconciliación en Alpaca.';
   } catch (error) {manualAccount=null;$('manual-submit').disabled=true;
     $('manual-message').textContent=`Cuenta manual: ${error.message}`;}
 }
 
-async function loadQuote(asset=$('manual-asset').value) {
+async function loadQuote(asset=selectedManualAsset()) {
   manualQuote=null;$('manual-submit').disabled=true;
+  if (!asset || !/^(?:[A-Z]{1,6}(?:[.-][A-Z])?|[A-Z]{2,5}\/USDT)$/.test(asset)) {
+    $('manual-quote').textContent='Escribe un ticker de acción válido, por ejemplo DIS o BRK.B.';return;
+  }
+  const broker=paperMode();
   $('manual-quote').textContent=`Consultando ${asset}…`;
   try {
     const response=await fetch(`/api/manual/quote?asset=${encodeURIComponent(asset)}`,{cache:'no-store'});
     const data=await response.json();
-    if (asset!==$('manual-asset').value) return;
+    if (asset!==selectedManualAsset()||broker!==paperMode()) return;
     if (!response.ok) throw new Error(data.error||`HTTP ${response.status}`);
+    if (broker) {
+      const check=await fetch(`/api/alpaca/manual/asset?asset=${encodeURIComponent(asset)}`,{cache:'no-store'});
+      const availability=await check.json();
+      if (asset!==selectedManualAsset()||broker!==paperMode()) return;
+      if (!check.ok) throw new Error(availability.error||`Alpaca HTTP ${check.status}`);
+      data.broker_available=availability.available;
+      data.broker_reason=availability.reason;
+    }
     manualQuote=data;
-    $('manual-quote').textContent=`${asset}: ${manualMoney(data.price)} · ${data.source} · ${utc(data.asof*1000)} UTC · ${data.tradable?'Órdenes paper disponibles':'Mercado cerrado o dato antiguo'}`;
-    $('manual-submit').disabled=!data.tradable||manualBusy||!manualAccount||Boolean(manualAccount.pending||manualAccount.halted);
+    $('manual-quote').textContent=`${asset}: ${manualMoney(data.price)} · ${data.source} · ${utc(data.asof*1000)} UTC · ${!data.tradable?'Mercado cerrado o dato antiguo':broker&&!data.broker_available?data.broker_reason:'Órdenes paper disponibles'}`;
+    $('manual-submit').disabled=!manualCanTrade()||manualBusy||!manualAccount||Boolean(manualAccount.pending||manualAccount.halted);
     await loadManual();
   } catch (error) {
-    if (asset===$('manual-asset').value) $('manual-quote').textContent=`Cotización no disponible: ${error.message}`;
+    if (asset===selectedManualAsset()&&broker===paperMode()) $('manual-quote').textContent=`Activo no disponible: ${error.message}`;
   }
 }
 
-$('manual-asset').addEventListener('change',()=>loadQuote());
+$('manual-asset').addEventListener('change',()=>{
+  $('manual-custom-label').hidden=$('manual-asset').value!=='__stock__';
+  $('manual-custom-ticker').value='';loadQuote();
+});
+$('manual-custom-ticker').addEventListener('change',()=>loadQuote());
 $('manual-mode').addEventListener('change',()=>{
   manualAccount=null;$('manual-message').textContent='';
   $('manual-rules').textContent=paperMode()
-    ? 'Alpaca paper compartida: compra cripto mínima 10 USD, ETF mínima 5 USD; se reserva 2 % del efectivo común. Solo puedes vender unidades manuales. Una moneda del bot no puede operarse manualmente hasta su salida. El precio de mercado puede variar.'
-    : 'Simulación local: compra mínima 5 USD. Para vender, introduce unidades de la tabla. Solo se permiten compras con efectivo y ventas de unidades propias.';
+    ? 'Alpaca paper compartida: cripto mínima 10 USD, acciones y ETF fraccionarios desde 5 USD. El activo debe estar negociable en Alpaca; las acciones operan en horario regular de Nueva York. Se reserva 2 % del efectivo común. Solo puedes vender unidades manuales.'
+    : 'Simulación local: compra mínima 5 USD. Las acciones y ETF operan en horario regular de Nueva York; las criptomonedas requieren cotización reciente. Solo puedes vender unidades propias.';
   loadManual();loadQuote();
 });
 $('manual-side').addEventListener('change',()=>{
@@ -219,9 +238,9 @@ $('manual-side').addEventListener('change',()=>{
 });
 $('manual-form').addEventListener('submit',async event=>{
   event.preventDefault();
-  const asset=$('manual-asset').value,side=$('manual-side').value;
+  const asset=selectedManualAsset(),side=$('manual-side').value;
   const amount=Number($('manual-amount').value);
-  if (!manualAccount||manualAccount.pending||manualAccount.halted||!manualQuote?.tradable||manualQuote.asset!==asset||manualBusy||!Number.isFinite(amount)||amount<=0) return;
+  if (!manualAccount||manualAccount.pending||manualAccount.halted||!manualCanTrade()||manualQuote.asset!==asset||manualBusy||!Number.isFinite(amount)||amount<=0) return;
   const broker=paperMode(),minimum=broker&&asset.includes('/')?10:5;
   if (side==='buy'&&(amount<minimum||amount>manualAccount.cash*(broker ? .98 : 1)+1e-8)) {
     $('manual-message').textContent=`Compra mínima ${minimum} USD; comprueba el saldo disponible.`;return;
@@ -229,7 +248,7 @@ $('manual-form').addEventListener('submit',async event=>{
   if (side==='sell'&&amount>(manualAccount.positions[asset]?.qty??0)+1e-10) {
     $('manual-message').textContent='No tienes suficientes unidades para vender.';return;
   }
-  const unit=side==='buy'?'USD de tu saldo manual':'unidades';
+  const unit=side==='buy'?`USD del saldo ${broker?'compartido':'manual'}`:'unidades';
   const message=`¿${broker?'Enviar a Alpaca paper':'Registrar'} ${side==='buy'?'COMPRA':'VENTA'} de ${amount} ${unit} de ${asset}?\nCotización orientativa ${manualMoney(manualQuote.price)} (${manualQuote.source}). ${broker?'Alpaca determinará el fill de mercado, que puede diferir de esta cotización.':'El simulador aplicará costos.'} No moverá dinero real.`;
   if (!window.confirm(message)) return;
   manualBusy=true;$('manual-submit').disabled=true;
@@ -270,7 +289,7 @@ async function loadAutoPaper() {
 loadAutoPaper();setInterval(loadAutoPaper,60000);
 setInterval(async()=>{
   if (manualBusy) return;
-  await Promise.all([loadQuote(),...Object.keys(manualAccount?.positions||{}).filter(a=>a!==$('manual-asset').value)
+  await Promise.all([loadQuote(),...Object.keys(manualAccount?.positions||{}).filter(a=>a!==selectedManualAsset())
     .map(a=>fetch(`/api/manual/quote?asset=${encodeURIComponent(a)}`,{cache:'no-store'}).catch(()=>null))]);
   await loadManual();
 },60000);

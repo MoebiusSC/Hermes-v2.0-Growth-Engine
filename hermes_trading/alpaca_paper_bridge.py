@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .manual_paper import ASSETS, OrderError
+from .manual_paper import CRYPTO, OrderError, asset_kind
 from .storage import atomic_write
 
 PAPER_URL = "https://paper-api.alpaca.markets"
@@ -30,15 +30,15 @@ class BrokerError(RuntimeError):
 
 
 def broker_symbol(asset: str) -> str:
-    if asset not in ASSETS:
-        raise OrderError("Activo no disponible")
+    asset_kind(asset)
     return asset.replace("/USDT", "/USD")
 
 
 def display(symbol: str) -> str:
-    if symbol in ("BTCUSD", "ETHUSD", "SOLUSD"):
-        return symbol[:-3] + "/USDT"
-    return symbol.replace("/USD", "/USDT") if symbol.endswith("/USD") else symbol
+    for base in CRYPTO:
+        if symbol in (f"{base}USD", f"{base}/USD"):
+            return f"{base}/USDT"
+    return symbol
 
 
 def amount_string(value: float, places: int) -> str:
@@ -49,6 +49,23 @@ def amount_string(value: float, places: int) -> str:
     if float(result) <= 0:
         raise OrderError("Cantidad bajo la precisión permitida")
     return result
+
+
+def quantity_string(value: float, details: dict) -> str:
+    step = details.get("min_trade_increment")
+    if step is None:
+        return amount_string(value, 9)
+    try:
+        increment = Decimal(str(step))
+        amount = Decimal(str(value))
+        if not increment.is_finite() or increment <= 0 or not amount.is_finite() or amount <= 0:
+            raise ValueError("Precisión inválida")
+        result = (amount / increment).to_integral_value(rounding=ROUND_DOWN) * increment
+    except (ValueError, ArithmeticError) as exc:
+        raise BrokerError("Precisión de activo inválida en Alpaca") from exc
+    if result <= 0:
+        raise OrderError("Unidades inferiores al incremento mínimo de Alpaca")
+    return format(result, "f")
 
 
 class PaperAPI:
@@ -139,13 +156,17 @@ def order_view(o: dict) -> dict:
             "status": o.get("status"), "ts": when}
 
 
-def ensure_asset(api: PaperAPI, asset: str, side: str) -> None:
+def ensure_asset(api: PaperAPI, asset: str, side: str) -> dict:
+    kind = asset_kind(asset)
     details = api.asset(asset)
     if details.get("status") != "active" or not details.get("tradable"):
         raise BrokerError("Activo no negociable en Alpaca paper")
-    if ASSETS[asset] == "ETF":
+    if details.get("class") not in (None, "crypto" if kind == "crypto" else "us_equity"):
+        raise BrokerError("El símbolo no corresponde al tipo de activo solicitado")
+    if kind != "crypto":
         if not details.get("fractionable") or not api.request("GET", "/v2/clock").get("is_open"):
-            raise BrokerError("ETF fraccionado no disponible o mercado cerrado")
+            raise BrokerError("Acción/ETF fraccionado no disponible o mercado cerrado")
+    return details
 
 
 _LOCK = threading.RLock()  # The Railway service runs its HTTP server and worker in one process.
@@ -231,6 +252,20 @@ class SharedPaper:
 
 
 class PaperManual(SharedPaper):
+    def availability(self, asset: str) -> dict:
+        kind = asset_kind(asset)
+        try:
+            details = self.api.asset(asset)
+        except BrokerError as exc:
+            if "HTTP 404:" in str(exc):
+                return {"asset": asset, "available": False, "reason": "No listado en Alpaca paper"}
+            raise
+        available = (details.get("status") == "active" and bool(details.get("tradable"))
+                     and details.get("class") in (None, "crypto" if kind == "crypto" else "us_equity")
+                     and (kind == "crypto" or bool(details.get("fractionable"))))
+        return {"asset": asset, "available": available,
+                "reason": None if available else "No negociable en Alpaca paper con órdenes fraccionarias"}
+
     def state(self) -> dict:
         with _LOCK:
             s = self.load()
@@ -258,8 +293,9 @@ class PaperManual(SharedPaper):
         id_, asset, side = data["id"], data["asset"], data["side"]
         if not isinstance(id_, str) or not id_.isascii() or not id_.isalnum() or not 8 <= len(id_) <= 50:
             raise OrderError("Identificador inválido")
-        if not isinstance(asset, str) or asset not in ASSETS or side not in ("buy", "sell") or isinstance(data["amount"], bool):
+        if side not in ("buy", "sell") or isinstance(data["amount"], bool):
             raise OrderError("Activo u operación inválida")
+        kind = asset_kind(asset)
         try:
             amount = float(data["amount"])
         except (TypeError, ValueError) as exc:
@@ -288,9 +324,9 @@ class PaperManual(SharedPaper):
             if s["auto_asset"] == asset:
                 raise BrokerError("Este activo pertenece al bot; elige otro o espera su salida")
             self.validate(s, self.api.positions())
-            ensure_asset(self.api, asset, side)
+            details = ensure_asset(self.api, asset, side)
             if side == "buy":
-                minimum = CRYPTO_MIN if ASSETS[asset] == "crypto" else 5.0
+                minimum = CRYPTO_MIN if kind == "crypto" else 5.0
                 if amount < minimum or amount > float(account["cash"]) * .98:
                     raise OrderError("Monto fuera del saldo en efectivo (reserva 2 %) o bajo el mínimo")
                 size = {"notional": amount_string(amount, 2)}
@@ -298,9 +334,9 @@ class PaperManual(SharedPaper):
                 available = float(s["manual"].get(asset, 0))
                 if amount > available + 1e-10 or available <= 0:
                     raise OrderError("No hay suficientes unidades manuales; no se permiten shorts")
-                size = {"qty": amount_string(min(amount, available), 9)}
+                size = {"qty": quantity_string(min(amount, available), details)}
             payload = {"symbol": broker_symbol(asset), "side": side, "type": "market",
-                       "time_in_force": "gtc" if ASSETS[asset] == "crypto" else "day",
+                       "time_in_force": "gtc" if kind == "crypto" else "day",
                        "client_order_id": client_id, **size}
             s["pending"] = {"owner": "manual", "client_id": client_id, "payload": payload,
                             "asset": asset, "side": side, "created_at": time.time()}
@@ -384,7 +420,7 @@ class PaperAuto(SharedPaper):
                     if not held or abs(float(held["qty"]) - s["auto_qty"]) > 1e-8:
                         s["halted_auto"] = "paper_position_mismatch"
                         break
-                    size = {"qty": amount_string(float(held["qty"]), 9)}
+                    size = {"qty": quantity_string(float(held["qty"]), self.api.asset(asset))}
                 client_id = "hv2a-" + f"{index:012x}"
                 payload = {"symbol": broker_symbol(asset), "side": side, "type": "market",
                            "time_in_force": "gtc", "client_order_id": client_id, **size}

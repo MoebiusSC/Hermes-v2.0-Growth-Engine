@@ -15,13 +15,14 @@ Este repositorio es `MoebiusSC/Hermes-v2.0-Growth-Engine`. Es un proyecto separa
 - `hermes_trading/growth_run.py`: worker y optimización autónoma.
 - `hermes_trading/growth_optimizer.py`, `growth_lab.py`: validación cuantitativa de candidatos.
 - `hermes_trading/growth_web.py`, `growth_dashboard.html`, `growth_dashboard.js`: API y dashboard protegidos.
-- `hermes_trading/manual_paper.py`: simulador manual local, independiente del bot.
+- `hermes_trading/manual_paper.py`: simulador manual local, independiente del bot; catálogo de criptos, ETF y acciones, incluidas acciones por ticker.
 - `hermes_trading/alpaca_paper_bridge.py`: cuenta Alpaca paper compartida por órdenes manuales y reflejo del bot.
 - `docs/RAILWAY.md`: configuración y despliegue. `README.md`: comportamiento, límites y comandos.
 
 ## Estado y seguridad de órdenes
 
 - La curva de comparación Hermes vs. V2 usa la cartera interna; el efectivo y equity de Alpaca mezclan operaciones manuales y del bot, así que no representan la rentabilidad aislada del bot.
+- La expansión de acciones y monedas es para órdenes manuales. El bot autónomo mantiene BTC/ETH/SOL y sus parámetros, datos y filtros cuantitativos.
 - La conexión Alpaca apunta únicamente a `https://paper-api.alpaca.markets`. Las claves están en variables privadas de Railway `HERMES_ALPACA_MANUAL_KEY` y `HERMES_ALPACA_MANUAL_SECRET`; no las copies al código, al chat, a pruebas ni a commits. `HERMES_ALPACA_PAPER=on` habilita el puente en producción.
 - `alpaca_shared.json` en el volumen persiste la identidad de cuenta, propiedad por símbolo, cursor y órdenes pendientes. El bot nunca debe vender unidades manuales. Las operaciones manuales nunca deben vender unidades del bot. No borres ni restaures ese archivo sin reconciliar posiciones y órdenes en Alpaca.
 - `account.json` y `manual_account.json` también viven en `/app/state/growth`. Ejecuta una sola réplica de este servicio sobre el volumen. El worker paper no habilita dinero real; `HERMES_TRADING_MODE=live` se rechaza.

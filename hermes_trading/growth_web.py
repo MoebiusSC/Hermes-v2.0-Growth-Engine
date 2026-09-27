@@ -125,6 +125,19 @@ def handler_factory(state_path: Path, password: str, quote_provider=manual_quote
                     self._json(200, paper_manual.state() if path.endswith("manual/state") else paper_auto.state())
                 except (BrokerError, OSError, ValueError, KeyError, TypeError) as exc:
                     self._json(503, {"error": str(exc)[:160]})
+            elif path == "/api/alpaca/manual/asset":
+                if not paper_manual:
+                    self._json(503, {"error": "Cuenta Alpaca paper no configurada"})
+                    return
+                try:
+                    params = parse_qs(parsed.query)
+                    if len(params.get("asset", [])) != 1:
+                        raise OrderError("Selecciona un activo")
+                    self._json(200, paper_manual.availability(params["asset"][0]))
+                except OrderError as exc:
+                    self._json(400, {"error": str(exc)})
+                except (BrokerError, OSError, ValueError, KeyError, TypeError) as exc:
+                    self._json(503, {"error": str(exc)[:160]})
             elif path == "/api/manual/quote":
                 params = parse_qs(parsed.query)
                 try:

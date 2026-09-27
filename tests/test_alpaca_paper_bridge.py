@@ -11,7 +11,7 @@ import httpx
 from pathlib import Path
 
 from hermes_trading.alpaca_paper_bridge import (BrokerError, PaperAPI, PaperAuto, PaperManual,
-                                                 amount_string, broker_symbol)
+                                                 amount_string, broker_symbol, display, quantity_string)
 from hermes_trading.growth import GrowthConfig, Portfolio
 from hermes_trading.growth_web import handler_factory
 from hermes_trading.growth_run import _save
@@ -22,6 +22,7 @@ class FakeAPI:
         self.account_id, self.cash, self.holdings, self.history = account_id, 50., {}, {}
         self.posts = 0
         self.lose_response = False
+        self.unavailable = set()
 
     def account(self):
         return {"id": self.account_id, "account_number": self.account_id,
@@ -38,7 +39,9 @@ class FakeAPI:
         return self.history.get(id_)
 
     def asset(self, asset):
-        return {"status": "active", "tradable": True, "fractionable": True}
+        return {"status": "active" if asset not in self.unavailable else "inactive",
+                "tradable": asset not in self.unavailable, "fractionable": True,
+                "class": "crypto" if "/" in asset else "us_equity"}
 
     def request(self, method, path):
         return {"is_open": True}
@@ -95,7 +98,25 @@ class PaperBridgeTests(unittest.TestCase):
 
     def test_precision(self):
         self.assertEqual(broker_symbol("SOL/USDT"),"SOL/USD")
+        self.assertEqual(broker_symbol("PAXG/USDT"),"PAXG/USD")
+        self.assertEqual(display("DOGEUSD"),"DOGE/USDT")
+        self.assertEqual(broker_symbol("BRK.B"),"BRK.B")
         self.assertEqual(amount_string(.1234567899,9),"0.123456789")
+        self.assertEqual(quantity_string(.12349,{"min_trade_increment":"0.0001"}),"0.1234")
+
+    def test_stocks_and_new_crypto_only_trade_when_broker_asset_is_available(self):
+        api=FakeAPI("paper")
+        api.unavailable.add("BNB/USDT")
+        with tempfile.TemporaryDirectory() as folder:
+            wallet=PaperManual(Path(folder)/"shared.json",api)
+            self.assertFalse(wallet.availability("BNB/USDT")["available"])
+            with self.assertRaisesRegex(BrokerError,"no negociable"):
+                wallet.order({"id":"manual0001","asset":"BNB/USDT","side":"buy","amount":10})
+            self.assertEqual(api.posts,0)
+            self.assertTrue(wallet.availability("AAPL")["available"])
+            wallet.order({"id":"manual0002","asset":"AAPL","side":"buy","amount":10})
+            self.assertEqual(list(wallet.state()["positions"]),["AAPL"])
+            self.assertAlmostEqual(wallet.state()["cash"],40)
 
     def test_auto_mirror_only_fresh_events_after_flat_initialization(self):
         api=FakeAPI("paper")
@@ -166,6 +187,10 @@ class PaperBridgeTests(unittest.TestCase):
                 with urllib.request.urlopen(urllib.request.Request(base+"/api/alpaca/manual/state",
                                                headers=headers),timeout=3) as response:
                     self.assertEqual(json.load(response)["cash"],50)
+                api.unavailable.add("PAXG/USDT")
+                with urllib.request.urlopen(urllib.request.Request(base+"/api/alpaca/manual/asset?asset=PAXG%2FUSDT",
+                                               headers=headers),timeout=3) as response:
+                    self.assertFalse(json.load(response)["available"])
                 data=json.dumps({"id":"manual0001","asset":"SPY","side":"buy","amount":10}).encode()
                 request=urllib.request.Request(base+"/api/alpaca/manual/order",data=data,headers=headers,method="POST")
                 with urllib.request.urlopen(request,timeout=3) as response:
