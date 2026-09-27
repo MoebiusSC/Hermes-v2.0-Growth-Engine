@@ -139,6 +139,8 @@ refresh();setInterval(refresh,30000);
 const manualMoney = value => Number.isFinite(Number(value)) ? `${Number(value).toFixed(2)} USD` : '—';
 const manualUnits = value => Number(value).toFixed(12).replace(/\.?0+$/,'');
 let manualAccount=null, manualQuote=null, manualBusy=false;
+const paperMode=()=>$('manual-mode').value==='alpaca';
+const manualStateUrl=()=>paperMode()?'/api/alpaca/manual/state':'/api/manual/state';
 
 function manualRow(tbody, values) {
   const row=tbody.insertRow();
@@ -162,15 +164,28 @@ function renderManual(account) {
   if (!account.orders.length) manualRow(orders,['Sin órdenes','—','—','—','—']);
   for (const order of account.orders.slice(-12).reverse())
     manualRow(orders,[utc(order.ts*1000),order.side==='buy'?'Compra':'Venta',order.asset,
-      `${manualUnits(order.qty)} × ${number(order.price)}`,order.pnl===null?'—':manualMoney(order.pnl)]);
+      order.qty?`${manualUnits(order.qty)} × ${number(order.price)}`:(order.status||'pendiente'),
+      order.pnl===null?(order.status||'—'):manualMoney(order.pnl)]);
 }
 
 async function loadManual() {
+  const url=manualStateUrl();
   try {
-    const response=await fetch('/api/manual/state',{cache:'no-store'});
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    renderManual(await response.json());
-  } catch (error) { $('manual-message').textContent=`No se pudo cargar la cuenta manual (${error.message}).`; }
+    const response=await fetch(url,{cache:'no-store'});
+    const data=await response.json();
+    if (url!==manualStateUrl()) return;
+    if (!response.ok) throw new Error(data.error||`HTTP ${response.status}`);
+    if (!data.ready && paperMode()) {
+      manualAccount=null;$('manual-cash').textContent='—';$('manual-equity').textContent='—';
+      $('manual-submit').disabled=true;
+      $('manual-message').textContent=data.message||'Alpaca paper pendiente de configuración';return;
+    }
+    renderManual(data);
+    $('manual-submit').disabled=manualBusy||!manualQuote?.tradable||Boolean(data.pending||data.halted);
+    if (data.halted) $('manual-message').textContent=`Alpaca paper detenido: ${data.halted}`;
+    if (data.pending) $('manual-message').textContent='Orden pendiente de ejecución o reconciliación en Alpaca.';
+  } catch (error) {manualAccount=null;$('manual-submit').disabled=true;
+    $('manual-message').textContent=`Cuenta manual: ${error.message}`;}
 }
 
 async function loadQuote(asset=$('manual-asset').value) {
@@ -183,7 +198,7 @@ async function loadQuote(asset=$('manual-asset').value) {
     if (!response.ok) throw new Error(data.error||`HTTP ${response.status}`);
     manualQuote=data;
     $('manual-quote').textContent=`${asset}: ${manualMoney(data.price)} · ${data.source} · ${utc(data.asof*1000)} UTC · ${data.tradable?'Órdenes paper disponibles':'Mercado cerrado o dato antiguo'}`;
-    $('manual-submit').disabled=!data.tradable||manualBusy;
+    $('manual-submit').disabled=!data.tradable||manualBusy||!manualAccount||Boolean(manualAccount.pending||manualAccount.halted);
     await loadManual();
   } catch (error) {
     if (asset===$('manual-asset').value) $('manual-quote').textContent=`Cotización no disponible: ${error.message}`;
@@ -191,6 +206,13 @@ async function loadQuote(asset=$('manual-asset').value) {
 }
 
 $('manual-asset').addEventListener('change',()=>loadQuote());
+$('manual-mode').addEventListener('change',()=>{
+  manualAccount=null;$('manual-message').textContent='';
+  $('manual-rules').textContent=paperMode()
+    ? 'Alpaca paper: compra cripto mínima 10 USD, ETF mínima 5 USD; se reserva 2 % del efectivo. Venta solo de unidades propias. Orden de mercado real dentro de la cuenta paper; el precio final puede variar.'
+    : 'Simulación local: compra mínima 5 USD. Para vender, introduce unidades de la tabla. Solo se permiten compras con efectivo y ventas de unidades propias.';
+  loadManual();loadQuote();
+});
 $('manual-side').addEventListener('change',()=>{
   $('manual-amount-label').firstChild.textContent=$('manual-side').value==='buy'?'Monto total en USD':'Cantidad de unidades a vender';
   $('manual-amount').value='';
@@ -199,26 +221,29 @@ $('manual-form').addEventListener('submit',async event=>{
   event.preventDefault();
   const asset=$('manual-asset').value,side=$('manual-side').value;
   const amount=Number($('manual-amount').value);
-  if (!manualAccount||!manualQuote?.tradable||manualQuote.asset!==asset||manualBusy||!Number.isFinite(amount)||amount<=0) return;
-  if (side==='buy'&&(amount<5||amount>manualAccount.cash+1e-8)) {
-    $('manual-message').textContent='Compra mínima 5 USD; comprueba el saldo.';return;
+  if (!manualAccount||manualAccount.pending||manualAccount.halted||!manualQuote?.tradable||manualQuote.asset!==asset||manualBusy||!Number.isFinite(amount)||amount<=0) return;
+  const broker=paperMode(),minimum=broker&&asset.includes('/')?10:5;
+  if (side==='buy'&&(amount<minimum||amount>manualAccount.cash*(broker ? .98 : 1)+1e-8)) {
+    $('manual-message').textContent=`Compra mínima ${minimum} USD; comprueba el saldo disponible.`;return;
   }
   if (side==='sell'&&amount>(manualAccount.positions[asset]?.qty??0)+1e-10) {
     $('manual-message').textContent='No tienes suficientes unidades para vender.';return;
   }
   const unit=side==='buy'?'USD de tu saldo manual':'unidades';
-  const message=`¿Registrar ${side==='buy'?'COMPRA':'VENTA'} simulada de ${amount} ${unit} de ${asset}?\nCotización de referencia ${manualMoney(manualQuote.price)} (${manualQuote.source}). El servidor actualizará el precio y aplicará costos antes de registrar la orden. No moverá dinero real.`;
+  const message=`¿${broker?'Enviar a Alpaca paper':'Registrar'} ${side==='buy'?'COMPRA':'VENTA'} de ${amount} ${unit} de ${asset}?\nCotización orientativa ${manualMoney(manualQuote.price)} (${manualQuote.source}). ${broker?'Alpaca determinará el fill de mercado, que puede diferir de esta cotización.':'El simulador aplicará costos.'} No moverá dinero real.`;
   if (!window.confirm(message)) return;
   manualBusy=true;$('manual-submit').disabled=true;
   $('manual-message').textContent='Registrando orden paper…';
   try {
     const id=crypto.randomUUID().replaceAll('-','');
-    const response=await fetch('/api/manual/order',{method:'POST',headers:{'Content-Type':'application/json','X-Hermes-Action':'manual-paper'},
+    const response=await fetch(broker?'/api/alpaca/manual/order':'/api/manual/order',{method:'POST',headers:{'Content-Type':'application/json','X-Hermes-Action':'manual-paper'},
       body:JSON.stringify({id,asset,side,amount})});
     const data=await response.json();
     if (!response.ok) throw new Error(data.error||`HTTP ${response.status}`);
     const order=data.order;
-    $('manual-message').textContent=`Orden paper registrada: ${side==='buy'?'compra':'venta'} ${manualUnits(order.qty)} ${asset} a ${manualMoney(order.price)}. Comisión simulada: ${manualMoney(order.fee)}.`;
+    $('manual-message').textContent=broker
+      ? `Alpaca paper: orden ${order.status||'enviada'} (${order.id}). ${order.qty?manualUnits(order.qty)+' unidades ejecutadas':'Consulta el historial para confirmar el fill'}.`
+      : `Orden local registrada: ${side==='buy'?'compra':'venta'} ${manualUnits(order.qty)} ${asset} a ${manualMoney(order.price)}. Comisión simulada: ${manualMoney(order.fee)}.`;
     $('manual-amount').value='';
     await loadManual();
   } catch (error) {
@@ -230,6 +255,18 @@ $('manual-form').addEventListener('submit',async event=>{
 });
 
 loadManual();loadQuote();
+async function loadAutoPaper() {
+  try {
+    const response=await fetch('/api/alpaca/auto/state',{cache:'no-store'}),data=await response.json();
+    if (!response.ok) throw new Error(data.error||`HTTP ${response.status}`);
+    $('alpaca-auto-status').textContent=data.ready?(data.halted?`Detenido: ${data.halted}`:
+      data.cursor===null?'Esperando cartera interna sin posición':`Conectado · cuenta ••••${data.account_suffix}`):data.message;
+    $('alpaca-auto-balance').textContent=data.ready?`${manualMoney(data.equity)} / ${manualMoney(data.cash)}`:'—';
+    $('alpaca-auto-positions').textContent=data.ready?(data.positions.map(p=>`${p.asset} ${manualUnits(p.qty)}`).join(', ')||'Sin posiciones'):'—';
+    $('alpaca-auto-last').textContent=data.last_order?`${data.last_order.side} ${data.last_order.asset} · ${data.last_order.status}`:'—';
+  } catch (error) {$('alpaca-auto-status').textContent=`Sin conexión: ${error.message}`;}
+}
+loadAutoPaper();setInterval(loadAutoPaper,60000);
 setInterval(async()=>{
   if (manualBusy) return;
   await Promise.all([loadQuote(),...Object.keys(manualAccount?.positions||{}).filter(a=>a!==$('manual-asset').value)

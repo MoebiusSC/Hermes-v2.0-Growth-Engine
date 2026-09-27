@@ -1,4 +1,4 @@
-"""Read-only, password-protected web dashboard alongside the v2 paper worker."""
+"""Password-protected dashboard and paper-only order APIs alongside the v2 worker."""
 from __future__ import annotations
 
 import asyncio
@@ -14,6 +14,7 @@ from pathlib import Path
 from .growth import GrowthConfig, Portfolio
 from .growth_run import _load_config, _paper, report
 from .manual_paper import MAX_BODY, ManualWallet, OrderError, QuoteError, quote as manual_quote
+from .alpaca_paper_bridge import (PaperAuto, PaperManual, BrokerError, configured, from_env)
 
 HERE = Path(__file__).resolve().parent
 STATE = Path(os.environ.get("HERMES_GROWTH_STATE", "growth_state/account.json"))
@@ -62,8 +63,15 @@ def snapshot(path: Path) -> dict:
     }
 
 
-def handler_factory(state_path: Path, password: str, quote_provider=manual_quote):
+def handler_factory(state_path: Path, password: str, quote_provider=manual_quote,
+                    paper_accounts: tuple | None = None):
     wallet = ManualWallet(state_path.with_name("manual_account.json"), quote_provider)
+    if paper_accounts is None and configured():
+        paper_accounts = (from_env("manual"), from_env("auto"))
+    paper_manual = (PaperManual(state_path.with_name("alpaca_manual.json"), *paper_accounts)
+                    if paper_accounts else None)
+    paper_auto = (PaperAuto(state_path.with_name("alpaca_auto.json"), paper_accounts[1], paper_accounts[0])
+                  if paper_accounts else None)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "HermesGrowth/2"
@@ -109,6 +117,14 @@ def handler_factory(state_path: Path, password: str, quote_provider=manual_quote
                     self._send(503, b'{"error":"Cuenta manual no disponible"}', "application/json; charset=utf-8")
                     return
                 self._json(200, result)
+            elif path in ("/api/alpaca/manual/state", "/api/alpaca/auto/state"):
+                if not paper_manual:
+                    self._json(200, {"ready": False, "message": "Pendiente de configurar dos cuentas Alpaca paper"})
+                    return
+                try:
+                    self._json(200, paper_manual.state() if path.endswith("manual/state") else paper_auto.state())
+                except (BrokerError, OSError, ValueError, KeyError, TypeError) as exc:
+                    self._json(503, {"error": str(exc)[:160]})
             elif path == "/api/manual/quote":
                 params = parse_qs(parsed.query)
                 try:
@@ -129,7 +145,8 @@ def handler_factory(state_path: Path, password: str, quote_provider=manual_quote
             if not _authorized(self.headers.get("Authorization"), password):
                 self._send(401, b"Authentication required", "text/plain; charset=utf-8")
                 return
-            if urlsplit(self.path).path != "/api/manual/order":
+            path = urlsplit(self.path).path
+            if path not in ("/api/manual/order", "/api/alpaca/manual/order"):
                 self._json(404, {"error": "Ruta no encontrada"})
                 return
             # Cross-origin forms cannot set this header or send JSON without preflight.
@@ -146,11 +163,16 @@ def handler_factory(state_path: Path, password: str, quote_provider=manual_quote
                 if size <= 0 or size > MAX_BODY:
                     raise OrderError("Tamaño de solicitud inválido")
                 data = json.loads(self.rfile.read(size))
-                self._json(200, {"order": wallet.order(data)})
+                if path == "/api/alpaca/manual/order" and not paper_manual:
+                    self._json(503, {"error": "Pendiente de configurar dos cuentas Alpaca paper"})
+                    return
+                self._json(200, {"order": paper_manual.order(data) if path == "/api/alpaca/manual/order" else wallet.order(data)})
             except (OrderError, json.JSONDecodeError) as exc:
                 self._json(400, {"error": str(exc)})
             except QuoteError:
                 self._json(503, {"error": "Cotización no disponible; orden no registrada"})
+            except BrokerError as exc:
+                self._json(503, {"error": str(exc)[:160]})
             except (OSError, ValueError, KeyError, TypeError):
                 self._json(503, {"error": "Cuenta manual no disponible; revise el estado"})
 

@@ -58,9 +58,12 @@ def _restore(cfg: GrowthConfig, state_path: Path) -> Portfolio:
 async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
     from .adapters import price
     from . import growth_optimizer as optimizer
+    from .alpaca_paper_bridge import PaperAuto, configured, from_env
 
     enabled = os.environ.get("HERMES_AUTOTUNE", "off").lower() == "on"
     book = _restore(cfg, state_path)
+    mirror = (PaperAuto(state_path.with_name("alpaca_auto.json"), from_env("auto"), from_env("manual"))
+              if configured() and not once else None)
     meta = optimizer.initialise(book.state, int(time.time() * 1000))
     meta["enabled"] = enabled
     task: asyncio.Task | None = None
@@ -169,6 +172,12 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                                 book.state["halted"] = "missing_current_quote"
                 await autotune(int(now))
                 _save(book, state_path, cfg)
+                if mirror:
+                    try:
+                        await asyncio.to_thread(mirror.sync, book)
+                    except Exception as exc:
+                        # A broker outage cannot rewrite or silently reset the research account.
+                        print(f"Alpaca paper mirror pending: {type(exc).__name__}: {exc}", flush=True)
                 print(json.dumps({"ts": dt.datetime.now(dt.timezone.utc).isoformat(), **report(book)}), flush=True)
             except Exception as exc:
                 failures += 1

@@ -88,9 +88,10 @@
     <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Monitoreo</div><h3>Últimos eventos</h3></div></div><div id="events"></div></div></section>
   <section class="card" style="margin-bottom:13px" aria-label="Operación manual simulada">
     <div class="card-head"><div><div class="label" style="margin-bottom:6px">Cuenta independiente · simulación</div><h3>Comprar y vender manualmente</h3></div><span class="chip">CRIPTO + ETF · PAPER</span></div>
-    <p class="note">Saldo manual inicial: 50 USD. Las órdenes se registran en una cartera separada y no modifican el algoritmo ni la comparación Hermes vs. V2. ETF fraccionados en simulación; las cotizaciones pueden tener retraso. No se envía ninguna orden a un broker.</p>
+    <p class="note">Elige simulación local o una cuenta Alpaca paper dedicada. El bot utiliza otra cuenta Alpaca paper; las operaciones manuales no alteran su cartera interna ni la comparación Hermes vs. V2. Alpaca paper simula ejecuciones, sin fondos reales.</p>
     <div class="manual-summary"><span class="small">Efectivo: <strong id="manual-cash">—</strong></span><span class="small">Valor estimado: <strong id="manual-equity">—</strong></span></div>
     <form id="manual-form" class="manual-form">
+      <label>Cuenta<select id="manual-mode"><option value="local">Simulación local</option><option value="alpaca">Alpaca paper</option></select></label>
       <label>Activo<select id="manual-asset" required><option value="BTC/USDT">BTC/USDT</option><option value="ETH/USDT">ETH/USDT</option><option value="SOL/USDT">SOL/USDT</option><option value="SPY">SPY · ETF</option><option value="VOO">VOO · ETF</option><option value="QQQ">QQQ · ETF</option></select></label>
       <label>Operación<select id="manual-side"><option value="buy">Comprar</option><option value="sell">Vender</option></select></label>
       <label id="manual-amount-label">Monto total en USD<input id="manual-amount" type="number" min="0.00000001" step="any" required inputmode="decimal" placeholder="Ej.: 10"></label>
@@ -102,7 +103,14 @@
     <div class="table-wrap"><table><thead><tr><th>Activo</th><th>Unidades</th><th>Costo</th><th>Valor estimado</th><th>P/L no realizado</th></tr></thead><tbody id="manual-positions"></tbody></table></div>
     <h3 style="margin-top:18px">Órdenes manuales recientes</h3>
     <div class="table-wrap"><table><thead><tr><th>Fecha UTC</th><th>Orden</th><th>Activo</th><th>Unidades / precio</th><th>Resultado realizado</th></tr></thead><tbody id="manual-orders"></tbody></table></div>
-    <p class="note">Compra mínima: 5 USD. Para vender, introduce unidades (consulta la tabla). Solo se permiten compras con efectivo disponible y ventas de unidades propias. Las órdenes ETF se aceptan durante horario regular de Nueva York con un dato intradía reciente; los costos y el deslizamiento son supuestos de la simulación.</p>
+    <p class="note" id="manual-rules">Simulación local: compra mínima 5 USD. Para vender, introduce unidades de la tabla. Solo se permiten compras con efectivo y ventas de unidades propias.</p>
+  </section>
+  <section class="card" style="margin-bottom:13px"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Cuenta paper dedicada · solo cripto</div><h3>Bot V2 en Alpaca paper</h3></div></div>
+    <div class="row"><span>Conexión</span><strong id="alpaca-auto-status">Pendiente</strong></div>
+    <div class="row"><span>Equity / efectivo de Alpaca</span><strong id="alpaca-auto-balance">—</strong></div>
+    <div class="row"><span>Posiciones en Alpaca</span><strong id="alpaca-auto-positions">—</strong></div>
+    <div class="row"><span>Última orden</span><strong id="alpaca-auto-last">—</strong></div>
+    <p class="note">El bot refleja órdenes paper solo cuando su cartera interna está inicialmente sin posiciones. Si falta una cuenta dedicada, hay órdenes abiertas o divergen las posiciones, detiene el envío a Alpaca y muestra el motivo. La curva de comparación sigue usando la cartera interna.</p>
   </section>
   <section class="grid">
     <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Investigación cuantitativa</div><h3>Optimización automática</h3></div></div>
