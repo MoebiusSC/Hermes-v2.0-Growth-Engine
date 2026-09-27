@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import dataclasses
-import time
 
 from .growth import BAR_MS, GrowthConfig
 from .growth_lab import assess

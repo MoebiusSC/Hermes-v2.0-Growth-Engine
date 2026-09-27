@@ -58,7 +58,7 @@ class OptimizerTests(unittest.TestCase):
         rows = [{"candidate_trades": 8, "candidate_return": .03, "baseline_return": .01,
                  "stress_return": .01}] * 4
         assessment = {"eligible_for_manual_review": True, "windows": rows}
-        with patch("hermes_trading.backtest.history", side_effect=history), patch(
+        with patch.object(backtest, "history", side_effect=history), patch(
                 "hermes_trading.growth_optimizer.assess", return_value=assessment):
             self.assertTrue(evaluate(self.cfg, 0)["accepted"])
             assessment["windows"] = rows[:3] + [{**rows[0], "candidate_return": .011}]
