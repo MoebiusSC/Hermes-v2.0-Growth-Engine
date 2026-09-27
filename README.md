@@ -42,6 +42,12 @@ La configuración base (`growth.json`) y todos los parámetros de capital, riesg
 
 El dashboard permite cargar en el navegador el JSON de `/api/state` del Hermes original para comparar **solo su cartera cripto** con V2 en el período de fechas común. Muestra retorno porcentual y máximo drawdown; el archivo original no sale del navegador. Hermes original y V2 tienen diferentes activos, capitales y reglas, por lo que la comparación observacional no demuestra superioridad estadística. Para una comparación experimental estricta harían falta iguales activos, períodos, costos y capitales en un backtest común.
 
+## Operación manual paper
+
+El dashboard protegido tiene un formulario de compra y venta manual de BTC/USDT, ETH/USDT, SOL/USDT y los ETF SPY, VOO, QQQ. Usa **otra cartera simulada** con 50 USD iniciales y fracciones de ETF, persistida en `manual_account.json` al lado de `account.json` en el mismo volumen. Sus órdenes nunca cambian el saldo, las métricas ni la optimización del motor autónomo. Las compras usan un presupuesto en USD (mínimo 5 USD) y las ventas usan unidades existentes. No hay apalancamiento ni ventas en corto. El dashboard muestra saldo, posiciones, resultado y un historial de órdenes.
+
+El servidor obtiene cotización nueva antes de cada orden: velas públicas de Kraken para cripto y velas de 1 minuto de Yahoo Finance para ETF. Rechaza precios inválidos o antiguos; los ETF solo aceptan órdenes durante el horario regular de Nueva York con datos intradía recientes (máximo 20 minutos de retraso). Para cripto el límite es 2 minutos. Aplica un deslizamiento simulado de 0,04 % en cripto y 0,05 % en ETF y una comisión simulada de 0,1 % en cripto. Estas son estimaciones paper, no cotizaciones ejecutables ni promesas de fill real. Las solicitudes requieren contraseña, origen coincidente y confirmación en el navegador. Cada orden tiene identificador para no duplicarla en un reintento. **No hay llamadas a ninguna API de órdenes de exchange o broker.**
+
 ## Límites antes de usar dinero real
 
 `HERMES_TRADING_MODE=live` se rechaza de forma explícita. El paper worker descubre stops al cerrar la vela de 15 minutos y **no coloca órdenes protectoras en un exchange**; si se corta la conexión, no hay protección real. La simulación supone fills históricos que pueden ser peores o imposibles con USDT 50, y el mínimo de orden del exchange puede variar por par.
@@ -50,4 +56,4 @@ La puerta de salida de un mes paper requiere analizar su curva, operaciones, fal
 
 ## Despliegue
 
-La imagen `Dockerfile` inicia el worker v2 paper y un dashboard web de solo lectura, protegido con `HERMES_DASHBOARD_PASSWORD` (mínimo 16 bytes). La API `/api/state` también requiere la contraseña; `/health` es público para la sonda de Railway. Monte un volumen persistente en `/app/state`; vea [docs/RAILWAY.md](docs/RAILWAY.md). Este repositorio independiente no altera el deployment de `hermes-trading` original.
+La imagen `Dockerfile` inicia el worker v2 paper y un dashboard protegido con `HERMES_DASHBOARD_PASSWORD` (mínimo 16 bytes). La API `/api/state` requiere contraseña; `/api/manual/order` registra órdenes solo en la simulación independiente; `/health` es público para la sonda de Railway. Monte un volumen persistente en `/app/state`; vea [docs/RAILWAY.md](docs/RAILWAY.md). Este repositorio independiente no altera el deployment de `hermes-trading` original.

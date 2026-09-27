@@ -135,3 +135,104 @@ async function refresh() {
   }
 }
 refresh();setInterval(refresh,30000);
+
+const manualMoney = value => Number.isFinite(Number(value)) ? `${Number(value).toFixed(2)} USD` : '—';
+const manualUnits = value => Number(value).toFixed(12).replace(/\.?0+$/,'');
+let manualAccount=null, manualQuote=null, manualBusy=false;
+
+function manualRow(tbody, values) {
+  const row=tbody.insertRow();
+  for (const value of values) row.insertCell().textContent=value;
+}
+
+function renderManual(account) {
+  manualAccount=account;
+  $('manual-cash').textContent=manualMoney(account.cash);
+  $('manual-equity').textContent=manualMoney(account.equity);
+  const positions=$('manual-positions');positions.replaceChildren();
+  const entries=Object.entries(account.positions);
+  if (!entries.length) manualRow(positions,['Sin posiciones','—','—','—','—']);
+  for (const [asset,pos] of entries) {
+    const mark=account.marks[asset];
+    const value=pos.qty*(mark?.price??pos.cost/pos.qty);
+    manualRow(positions,[asset,manualUnits(pos.qty),manualMoney(pos.cost),manualMoney(value),
+      `${manualMoney(value-pos.cost)} · ${mark?utc(mark.asof*1000)+' UTC':'sin cotización'}`]);
+  }
+  const orders=$('manual-orders');orders.replaceChildren();
+  if (!account.orders.length) manualRow(orders,['Sin órdenes','—','—','—','—']);
+  for (const order of account.orders.slice(-12).reverse())
+    manualRow(orders,[utc(order.ts*1000),order.side==='buy'?'Compra':'Venta',order.asset,
+      `${manualUnits(order.qty)} × ${number(order.price)}`,order.pnl===null?'—':manualMoney(order.pnl)]);
+}
+
+async function loadManual() {
+  try {
+    const response=await fetch('/api/manual/state',{cache:'no-store'});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    renderManual(await response.json());
+  } catch (error) { $('manual-message').textContent=`No se pudo cargar la cuenta manual (${error.message}).`; }
+}
+
+async function loadQuote(asset=$('manual-asset').value) {
+  manualQuote=null;$('manual-submit').disabled=true;
+  $('manual-quote').textContent=`Consultando ${asset}…`;
+  try {
+    const response=await fetch(`/api/manual/quote?asset=${encodeURIComponent(asset)}`,{cache:'no-store'});
+    const data=await response.json();
+    if (asset!==$('manual-asset').value) return;
+    if (!response.ok) throw new Error(data.error||`HTTP ${response.status}`);
+    manualQuote=data;
+    $('manual-quote').textContent=`${asset}: ${manualMoney(data.price)} · ${data.source} · ${utc(data.asof*1000)} UTC · ${data.tradable?'Órdenes paper disponibles':'Mercado cerrado o dato antiguo'}`;
+    $('manual-submit').disabled=!data.tradable||manualBusy;
+    await loadManual();
+  } catch (error) {
+    if (asset===$('manual-asset').value) $('manual-quote').textContent=`Cotización no disponible: ${error.message}`;
+  }
+}
+
+$('manual-asset').addEventListener('change',()=>loadQuote());
+$('manual-side').addEventListener('change',()=>{
+  $('manual-amount-label').firstChild.textContent=$('manual-side').value==='buy'?'Monto total en USD':'Cantidad de unidades a vender';
+  $('manual-amount').value='';
+});
+$('manual-form').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const asset=$('manual-asset').value,side=$('manual-side').value;
+  const amount=Number($('manual-amount').value);
+  if (!manualAccount||!manualQuote?.tradable||manualQuote.asset!==asset||manualBusy||!Number.isFinite(amount)||amount<=0) return;
+  if (side==='buy'&&(amount<5||amount>manualAccount.cash+1e-8)) {
+    $('manual-message').textContent='Compra mínima 5 USD; comprueba el saldo.';return;
+  }
+  if (side==='sell'&&amount>(manualAccount.positions[asset]?.qty??0)+1e-10) {
+    $('manual-message').textContent='No tienes suficientes unidades para vender.';return;
+  }
+  const unit=side==='buy'?'USD de tu saldo manual':'unidades';
+  const message=`¿Registrar ${side==='buy'?'COMPRA':'VENTA'} simulada de ${amount} ${unit} de ${asset}?\nCotización de referencia ${manualMoney(manualQuote.price)} (${manualQuote.source}). El servidor actualizará el precio y aplicará costos antes de registrar la orden. No moverá dinero real.`;
+  if (!window.confirm(message)) return;
+  manualBusy=true;$('manual-submit').disabled=true;
+  $('manual-message').textContent='Registrando orden paper…';
+  try {
+    const id=crypto.randomUUID().replaceAll('-','');
+    const response=await fetch('/api/manual/order',{method:'POST',headers:{'Content-Type':'application/json','X-Hermes-Action':'manual-paper'},
+      body:JSON.stringify({id,asset,side,amount})});
+    const data=await response.json();
+    if (!response.ok) throw new Error(data.error||`HTTP ${response.status}`);
+    const order=data.order;
+    $('manual-message').textContent=`Orden paper registrada: ${side==='buy'?'compra':'venta'} ${manualUnits(order.qty)} ${asset} a ${manualMoney(order.price)}. Comisión simulada: ${manualMoney(order.fee)}.`;
+    $('manual-amount').value='';
+    await loadManual();
+  } catch (error) {
+    $('manual-message').textContent=`Orden no confirmada: ${error.message}. Consulta el historial antes de repetirla.`;
+    await loadManual();
+  } finally {
+    manualBusy=false;await loadQuote(asset);
+  }
+});
+
+loadManual();loadQuote();
+setInterval(async()=>{
+  if (manualBusy) return;
+  await Promise.all([loadQuote(),...Object.keys(manualAccount?.positions||{}).filter(a=>a!==$('manual-asset').value)
+    .map(a=>fetch(`/api/manual/quote?asset=${encodeURIComponent(a)}`,{cache:'no-store'}).catch(()=>null))]);
+  await loadManual();
+},60000);

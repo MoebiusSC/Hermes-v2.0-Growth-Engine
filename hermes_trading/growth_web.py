@@ -7,11 +7,13 @@ import hmac
 import json
 import os
 import threading
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .growth import GrowthConfig, Portfolio
 from .growth_run import _load_config, _paper, report
+from .manual_paper import MAX_BODY, ManualWallet, OrderError, QuoteError, quote as manual_quote
 
 HERE = Path(__file__).resolve().parent
 STATE = Path(os.environ.get("HERMES_GROWTH_STATE", "growth_state/account.json"))
@@ -60,7 +62,9 @@ def snapshot(path: Path) -> dict:
     }
 
 
-def handler_factory(state_path: Path, password: str):
+def handler_factory(state_path: Path, password: str, quote_provider=manual_quote):
+    wallet = ManualWallet(state_path.with_name("manual_account.json"), quote_provider)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "HermesGrowth/2"
 
@@ -79,7 +83,8 @@ def handler_factory(state_path: Path, password: str):
             self.wfile.write(content)
 
         def do_GET(self) -> None:
-            path = self.path.split("?", 1)[0]
+            parsed = urlsplit(self.path)
+            path = parsed.path
             if path == "/health":
                 self._send(200, b'{"status":"ok"}', "application/json; charset=utf-8")
                 return
@@ -97,8 +102,57 @@ def handler_factory(state_path: Path, password: str):
                     self._send(503, b'{"error":"Estado no disponible"}', "application/json; charset=utf-8")
                     return
                 self._send(200, json.dumps(result, allow_nan=False).encode(), "application/json; charset=utf-8")
+            elif path == "/api/manual/state":
+                try:
+                    result = wallet.state()
+                except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError):
+                    self._send(503, b'{"error":"Cuenta manual no disponible"}', "application/json; charset=utf-8")
+                    return
+                self._json(200, result)
+            elif path == "/api/manual/quote":
+                params = parse_qs(parsed.query)
+                try:
+                    if len(params.get("asset", [])) != 1:
+                        raise OrderError("Selecciona un activo")
+                    self._json(200, wallet.market_quote(params["asset"][0]))
+                except OrderError as exc:
+                    self._json(400, {"error": str(exc)})
+                except (QuoteError, OSError, ValueError):
+                    self._json(503, {"error": "Cotización no disponible; orden no registrada"})
             else:
                 self._send(404, b"Not found", "text/plain; charset=utf-8")
+
+        def _json(self, status: int, payload: dict) -> None:
+            self._send(status, json.dumps(payload, allow_nan=False).encode(), "application/json; charset=utf-8")
+
+        def do_POST(self) -> None:
+            if not _authorized(self.headers.get("Authorization"), password):
+                self._send(401, b"Authentication required", "text/plain; charset=utf-8")
+                return
+            if urlsplit(self.path).path != "/api/manual/order":
+                self._json(404, {"error": "Ruta no encontrada"})
+                return
+            # Cross-origin forms cannot set this header or send JSON without preflight.
+            origin = self.headers.get("Origin")
+            host = self.headers.get("Host")
+            if (self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json"
+                    or self.headers.get("X-Hermes-Action") != "manual-paper"
+                    or not origin or urlsplit(origin).netloc != host
+                    or urlsplit(origin).scheme not in ("https", "http")):
+                self._json(403, {"error": "Solicitud no autorizada"})
+                return
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if size <= 0 or size > MAX_BODY:
+                    raise OrderError("Tamaño de solicitud inválido")
+                data = json.loads(self.rfile.read(size))
+                self._json(200, {"order": wallet.order(data)})
+            except (OrderError, json.JSONDecodeError) as exc:
+                self._json(400, {"error": str(exc)})
+            except QuoteError:
+                self._json(503, {"error": "Cotización no disponible; orden no registrada"})
+            except (OSError, ValueError, KeyError, TypeError):
+                self._json(503, {"error": "Cuenta manual no disponible; revise el estado"})
 
         def log_message(self, fmt: str, *args) -> None:
             # Do not log URL parameters or credentials.
