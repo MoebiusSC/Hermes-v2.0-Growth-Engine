@@ -62,7 +62,7 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
 
     enabled = os.environ.get("HERMES_AUTOTUNE", "off").lower() == "on"
     book = _restore(cfg, state_path)
-    mirror = (PaperAuto(state_path.with_name("alpaca_auto.json"), from_env("auto"), from_env("manual"))
+    mirror = (PaperAuto(state_path.with_name("alpaca_shared.json"), from_env())
               if configured() and not once else None)
     meta = optimizer.initialise(book.state, int(time.time() * 1000))
     meta["enabled"] = enabled

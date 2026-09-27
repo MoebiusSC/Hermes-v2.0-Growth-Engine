@@ -1,4 +1,4 @@
-"""Separate Alpaca paper accounts for manual orders and the v2 strategy mirror.
+"""One Alpaca paper account with separate manual and strategy ownership ledgers.
 
 Only the fixed paper API URL can receive orders. The strategy's research ledger is
 kept intact and Alpaca activity is journaled independently on the state volume.
@@ -106,23 +106,16 @@ def enabled() -> bool:
 
 
 def configured() -> bool:
-    return enabled() and all(os.environ.get(f"HERMES_ALPACA_{role}_{part}")
-                             for role in ("MANUAL", "AUTO") for part in ("KEY", "SECRET"))
+    return enabled() and all(os.environ.get(f"HERMES_ALPACA_MANUAL_{part}")
+                             for part in ("KEY", "SECRET"))
 
 
-def from_env(role: str) -> PaperAPI:
+def from_env() -> PaperAPI:
     if not configured():
-        raise BrokerError("Pendiente de configurar dos cuentas Alpaca paper")
-    key = os.environ.get(f"HERMES_ALPACA_{role.upper()}_KEY", "")
-    secret = os.environ.get(f"HERMES_ALPACA_{role.upper()}_SECRET", "")
+        raise BrokerError("Pendiente de configurar la cuenta Alpaca paper")
+    key = os.environ.get("HERMES_ALPACA_MANUAL_KEY", "")
+    secret = os.environ.get("HERMES_ALPACA_MANUAL_SECRET", "")
     return PaperAPI(key, secret)
-
-
-def distinct(manual: PaperAPI, auto: PaperAPI) -> tuple[dict, dict]:
-    a, b = manual.account(), auto.account()
-    if not a.get("id") or not b.get("id") or a["id"] == b["id"]:
-        raise BrokerError("Las cuentas paper manual y automática deben ser distintas")
-    return a, b
 
 
 def owned(positions: list[dict], asset: str) -> dict | None:
@@ -155,64 +148,109 @@ def ensure_asset(api: PaperAPI, asset: str, side: str) -> None:
             raise BrokerError("ETF fraccionado no disponible o mercado cerrado")
 
 
-class PaperManual:
-    def __init__(self, path: Path, api: PaperAPI, other: PaperAPI):
-        self.path, self.api, self.other = Path(path), api, other
-        self.lock = threading.RLock()
+_LOCK = threading.RLock()  # The Railway service runs its HTTP server and worker in one process.
+
+
+class SharedPaper:
+    def __init__(self, path: Path, api: PaperAPI):
+        self.path, self.api = Path(path), api
 
     def load(self) -> dict:
-        return json.loads(self.path.read_text()) if self.path.exists() else {
-            "account_id": None, "pending": None, "halted": None}
+        return json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {
+            "account_id": None, "manual": {}, "auto_asset": None, "auto_qty": 0,
+            "cursor": None, "skipped_asset": None, "pending": None, "manual_sent": {},
+            "halted_manual": None, "halted_auto": None, "last_order": None}
 
-    def save(self, s: dict) -> None:
-        atomic_write(self.path, json.dumps(s, indent=2))
+    def save(self, state: dict) -> None:
+        atomic_write(self.path, json.dumps(state, indent=2, allow_nan=False))
 
-    def account(self, s: dict) -> dict:
-        account, _ = distinct(self.api, self.other)
-        if s["account_id"] and s["account_id"] != account["id"]:
-            raise BrokerError("Cambió la cuenta paper manual; revise el historial")
-        if s["account_id"] is None:
+    def account(self, state: dict) -> dict:
+        account = self.api.account()
+        if not account.get("id"):
+            raise BrokerError("La cuenta paper no tiene identificador")
+        if state["account_id"] and state["account_id"] != account["id"]:
+            raise BrokerError("Cambió la cuenta paper; revise el historial antes de operar")
+        if state["account_id"] is None:
             if self.api.positions() or self.api.orders():
-                raise BrokerError("La cuenta manual debe estar vacía antes de conectarla")
+                raise BrokerError("La cuenta paper debe estar vacía antes de conectarla")
             if not 45 <= float(account["equity"]) <= 55:
-                raise BrokerError("Configura el saldo inicial de la cuenta manual paper a 50 USD")
-            s["account_id"] = account["id"]
-            self.save(s)
+                raise BrokerError("Configura el saldo inicial de la cuenta paper a 50 USD")
+            state["account_id"] = account["id"]
+            self.save(state)
         return account
 
-    def reconcile(self, s: dict) -> dict | None:
-        pending = s.get("pending")
+    def reconcile(self, state: dict) -> dict | None:
+        pending = state["pending"]
         if not pending:
             return None
         order = self.api.by_client_id(pending["client_id"])
-        if order and order.get("status") in TERMINAL:
-            if order["status"] != "filled" and float(order.get("filled_qty") or 0) > 0:
-                s["halted"] = "Orden parcial: revisar en Alpaca antes de continuar"
-            s["pending"] = None
-            self.save(s)
+        if order is None:
+            if time.time() - pending["created_at"] > 60:
+                state["halted_" + pending["owner"]] = "Orden sin confirmar: revisar en Alpaca"
+                self.save(state)
+            return None
+        if order.get("status") in TERMINAL:
+            qty = float(order.get("filled_qty") or 0)
+            owner, asset = pending["owner"], pending["asset"]
+            if order["status"] != "filled" or qty <= 0:
+                state["halted_" + owner] = "Orden no ejecutada o parcial: revisar en Alpaca"
+                if qty > 0:
+                    state["halted_manual"] = state["halted_auto"] = "Orden parcial: revisar en Alpaca"
+            else:
+                held = owned(self.api.positions(), asset)
+                held_qty = float(held["qty"]) if held else 0.
+                if owner == "manual":
+                    if pending["side"] == "buy" and state["auto_asset"] == asset:
+                        state["halted_manual"] = state["halted_auto"] = "Posición superpuesta: revisar en Alpaca"
+                    state["manual"][asset] = held_qty
+                    if held_qty <= 1e-9:
+                        state["manual"].pop(asset, None)
+                else:
+                    state["auto_asset"] = asset if held_qty > 1e-9 else None
+                    state["auto_qty"] = held_qty
+                    state["cursor"] = pending["index"] + 1
+                    state["last_order"] = order_view(order)
+            state["pending"] = None
+            self.save(state)
         return order
 
+    def validate(self, state: dict, positions: list[dict]) -> None:
+        if state["pending"]:
+            return  # A broker fill can be ahead of the pending order's reconciliation.
+        if self.api.orders():
+            raise BrokerError("Hay una orden abierta en Alpaca; revisar antes de operar")
+        expected = dict(state["manual"])
+        if state["auto_asset"]:
+            if state["auto_asset"] in expected:
+                raise BrokerError("El bot y la cartera manual comparten un activo; revisar en Alpaca")
+            expected[state["auto_asset"]] = state["auto_qty"]
+        actual = {display(p["symbol"]): float(p["qty"]) for p in positions if abs(float(p["qty"])) > 1e-9}
+        if actual.keys() != expected.keys() or any(abs(actual[a] - q) > max(1e-8, q * 1e-7)
+                                                     for a, q in expected.items()):
+            raise BrokerError("Posiciones de Alpaca difieren del registro Hermes; revisar en Alpaca")
+
+
+class PaperManual(SharedPaper):
     def state(self) -> dict:
-        with self.lock:
+        with _LOCK:
             s = self.load()
             account = self.account(s)
             pending = self.reconcile(s)
+            broker_positions = self.api.positions()
+            self.validate(s, broker_positions)
             positions, marks = {}, {}
-            for p in self.api.positions():
+            for p in broker_positions:
                 asset = display(p["symbol"])
-                if asset not in ASSETS:
-                    s["halted"] = "Activo ajeno al panel en la cuenta dedicada"
-                    self.save(s)
-                    continue
-                positions[asset] = {"qty": float(p["qty"]), "cost": float(p["cost_basis"])}
-                marks[asset] = {"price": float(p["current_price"]), "asof": time.time(), "source": "Alpaca paper"}
+                if asset in s["manual"]:
+                    positions[asset] = {"qty": float(p["qty"]), "cost": float(p["cost_basis"])}
+                    marks[asset] = {"price": float(p["current_price"]), "asof": time.time(), "source": "Alpaca paper"}
             orders = [order_view(o) for o in self.api.orders("all")
                       if str(o.get("client_order_id", "")).startswith("hv2m-")]
             orders.sort(key=lambda o: o["ts"])
             return {"ready": True, "cash": float(account["cash"]), "equity": float(account["equity"]),
                     "positions": positions, "marks": marks, "orders": orders,
-                    "pending": order_view(pending) if s.get("pending") and pending else None,
-                    "halted": s.get("halted"), "account_suffix": str(account.get("account_number", ""))[-4:]}
+                    "pending": order_view(pending) if s["pending"] and pending else None,
+                    "halted": s["halted_manual"], "account_suffix": str(account.get("account_number", ""))[-4:]}
 
     def order(self, data: dict) -> dict:
         if not isinstance(data, dict) or set(data) != {"id", "asset", "side", "amount"}:
@@ -229,39 +267,45 @@ class PaperManual:
         if not math.isfinite(amount) or amount <= 0:
             raise OrderError("Cantidad inválida")
         client_id = "hv2m-" + id_
-        with self.lock:
+        with _LOCK:
             s = self.load()
             account = self.account(s)
-            existing = self.api.by_client_id(client_id)
-            if existing:
-                if existing.get("symbol", "").replace("/", "") != broker_symbol(asset).replace("/", "") or existing.get("side") != side:
+            self.reconcile(s)
+            sent = s["manual_sent"].get(client_id)
+            if sent:
+                if sent != {"asset": asset, "side": side, "amount": amount}:
                     raise OrderError("Identificador ya usado para otra operación")
-                self.reconcile(s)
-                return order_view(existing)
-            if s["pending"] and s["pending"]["client_id"] != client_id:
+                existing = self.api.by_client_id(client_id)
+                if existing:
+                    return order_view(existing)
+                raise BrokerError("Orden pendiente sin respuesta; revisar en Alpaca")
+            if self.api.by_client_id(client_id):
+                raise OrderError("Identificador ya usado en Alpaca")
+            if s["pending"]:
                 raise BrokerError("Existe una orden pendiente de reconciliar")
-            if s["halted"]:
-                raise BrokerError(s["halted"])
+            if s["halted_manual"]:
+                raise BrokerError(s["halted_manual"])
+            if s["auto_asset"] == asset:
+                raise BrokerError("Este activo pertenece al bot; elige otro o espera su salida")
+            self.validate(s, self.api.positions())
             ensure_asset(self.api, asset, side)
-            if self.api.orders():
-                raise BrokerError("Resuelve las órdenes abiertas en Alpaca antes de continuar")
             if side == "buy":
                 minimum = CRYPTO_MIN if ASSETS[asset] == "crypto" else 5.0
                 if amount < minimum or amount > float(account["cash"]) * .98:
                     raise OrderError("Monto fuera del saldo en efectivo (reserva 2 %) o bajo el mínimo")
                 size = {"notional": amount_string(amount, 2)}
             else:
-                position = owned(self.api.positions(), asset)
-                if not position or amount > float(position["qty"]) + 1e-10:
-                    raise OrderError("No hay suficientes unidades; no se permiten shorts")
-                size = {"qty": amount_string(min(amount, float(position["qty"])), 9)}
+                available = float(s["manual"].get(asset, 0))
+                if amount > available + 1e-10 or available <= 0:
+                    raise OrderError("No hay suficientes unidades manuales; no se permiten shorts")
+                size = {"qty": amount_string(min(amount, available), 9)}
             payload = {"symbol": broker_symbol(asset), "side": side, "type": "market",
                        "time_in_force": "gtc" if ASSETS[asset] == "crypto" else "day",
                        "client_order_id": client_id, **size}
-            if s["pending"] and (s["pending"]["payload"] != payload):
-                raise OrderError("Identificador pendiente corresponde a otra orden")
-            s["pending"] = {"client_id": client_id, "payload": payload}
-            self.save(s)  # persist intent before any broker POST
+            s["pending"] = {"owner": "manual", "client_id": client_id, "payload": payload,
+                            "asset": asset, "side": side, "created_at": time.time()}
+            s["manual_sent"][client_id] = {"asset": asset, "side": side, "amount": amount}
+            self.save(s)  # Persist intent before any broker POST.
             order = self.api.submit(payload)
             if order.get("client_order_id") != client_id:
                 raise BrokerError("Respuesta inesperada; reconcilia en Alpaca")
@@ -269,112 +313,87 @@ class PaperManual:
             return order_view(order)
 
 
-class PaperAuto:
-    def __init__(self, path: Path, api: PaperAPI, other: PaperAPI):
-        self.path, self.api, self.other = Path(path), api, other
-
-    def load(self) -> dict:
-        return json.loads(self.path.read_text()) if self.path.exists() else {
-            "account_id": None, "cursor": None, "pending": None, "halted": None, "last_order": None}
-
-    def save(self, s: dict) -> None:
-        atomic_write(self.path, json.dumps(s, indent=2))
-
+class PaperAuto(SharedPaper):
     def state(self) -> dict:
-        s = self.load()
-        _, account = distinct(self.other, self.api)
-        if s["account_id"] and s["account_id"] != account["id"]:
-            raise BrokerError("Cambió la cuenta paper del bot")
-        return {**s, "ready": True, "cash": float(account["cash"]),
-                "equity": float(account["equity"]), "account_suffix": str(account.get("account_number", ""))[-4:],
-                "positions": [{"asset": display(p["symbol"]), "qty": float(p["qty"]),
-                               "value": float(p["market_value"])} for p in self.api.positions()]}
+        with _LOCK:
+            s = self.load()
+            account = self.account(s)
+            self.reconcile(s)
+            positions = self.api.positions()
+            self.validate(s, positions)
+            held = owned(positions, s["auto_asset"]) if s["auto_asset"] else None
+            return {"ready": True, "cash": float(account["cash"]), "equity": float(account["equity"]),
+                    "account_suffix": str(account.get("account_number", ""))[-4:],
+                    "positions": [{"asset": s["auto_asset"], "qty": float(held["qty"]),
+                                   "value": float(held["market_value"])}] if held else [],
+                    "cursor": s["cursor"], "pending": s["pending"], "halted": s["halted_auto"],
+                    "skipped_asset": s["skipped_asset"], "last_order": s["last_order"]}
 
     def sync(self, book) -> None:
-        s = self.load()
-        _, account = distinct(self.other, self.api)
-        if s["account_id"] and s["account_id"] != account["id"]:
-            s["halted"] = "account_changed"
-        if s["halted"]:
-            self.save(s)
-            return
-        if s["cursor"] is None:
-            if book.state["position"] or book.state["pending"]:
-                return  # first mirror only while the strategy is flat
-            if self.api.positions() or self.api.orders():
-                s["halted"] = "account_not_empty"
-            elif not 45 <= float(account["equity"]) <= 55:
-                s["halted"] = "set_paper_balance_to_50_usd"
-            else:
-                s["account_id"], s["cursor"] = account["id"], len(book.state["events"])
-            self.save(s)
-            return
-        pending = s["pending"]
-        if pending:
-            order = self.api.by_client_id(pending["client_id"])
-            if order is None:
-                if time.time() - pending["created_at"] > 60:
-                    s["halted"] = "paper_order_unconfirmed"
-                    self.save(s)
-                    return
-                order = self.api.submit(pending["payload"])
-            if order["status"] in TERMINAL:
-                if order["status"] != "filled" or float(order.get("filled_qty") or 0) <= 0:
-                    s["halted"] = "paper_order_not_filled"
-                else:
-                    held = owned(self.api.positions(), pending["asset"])
-                    exists = bool(held and float(held["qty"]) * float(held["current_price"]) > .01)
-                    if exists != (pending["side"] == "buy"):
-                        s["halted"] = "paper_position_mismatch"
-                s["last_order"] = order_view(order)
-                s["cursor"] = pending["index"] + 1
-                s["pending"] = None
-                self.save(s)
-            elif time.time() - pending["created_at"] > 60:
-                # GTC crypto orders must not remain open after the strategy moves on.
-                if order.get("id"):
-                    self.api.cancel(order["id"])
-                s["halted"] = "paper_order_timeout_check_alpaca"
-                self.save(s)
-            return
-        if self.api.orders():
-            s["halted"] = "unexpected_open_order"
-            self.save(s)
-            return
-        for index in range(s["cursor"], len(book.state["events"])):
-            event = book.state["events"][index]
-            s["cursor"] = index + 1
-            if event.get("event") not in ("entry", "exit"):
-                continue
-            if abs(time.time() * 1000 - event["ts"]) > 120_000:
-                s["halted"] = "stale_strategy_event"
-                break
-            asset = event["asset"]
-            side = "buy" if event["event"] == "entry" else "sell"
+        with _LOCK:
+            s = self.load()
+            account = self.account(s)
+            self.reconcile(s)
+            if s["halted_auto"] or s["pending"]:
+                return
             positions = self.api.positions()
-            if side == "buy":
-                if significant(positions) or not book.state["position"] or book.state["position"]["asset"] != asset:
-                    s["halted"] = "strategy_position_mismatch"
+            try:
+                self.validate(s, positions)
+            except BrokerError as exc:
+                s["halted_auto"] = str(exc)
+                self.save(s)
+                return
+            if s["cursor"] is None:
+                if book.state["position"] or book.state["pending"]:
+                    return  # Start mirroring only when the research strategy is flat.
+                s["cursor"] = len(book.state["events"])
+                self.save(s)
+                return
+            for index in range(s["cursor"], len(book.state["events"])):
+                event = book.state["events"][index]
+                s["cursor"] = index + 1
+                if event.get("event") not in ("entry", "exit"):
+                    continue
+                if abs(time.time() * 1000 - event["ts"]) > 120_000:
+                    s["halted_auto"] = "stale_strategy_event"
                     break
-                ensure_asset(self.api, asset, side)
-                notional = min(float(event["notional"]), float(account["cash"]) * .98,
-                               float(account["equity"]) * book.cfg.max_exposure)
-                if notional < CRYPTO_MIN:
-                    s["halted"] = "alpaca_min_order_10_usd"
-                    break
-                size = {"notional": amount_string(notional, 2)}
-            else:
-                held = owned(positions, asset)
-                if not held:
-                    s["halted"] = "paper_position_missing"
-                    break
-                size = {"qty": amount_string(float(held["qty"]), 9)}
-            client_id = "hv2a-" + f"{index:012x}"
-            payload = {"symbol": broker_symbol(asset), "side": side, "type": "market",
-                       "time_in_force": "gtc", "client_order_id": client_id, **size}
-            s["pending"] = {"client_id": client_id, "payload": payload, "asset": asset,
-                            "side": side, "index": index, "created_at": time.time()}
+                asset = event["asset"]
+                side = "buy" if event["event"] == "entry" else "sell"
+                if side == "buy":
+                    if s["auto_asset"] or not book.state["position"] or book.state["position"]["asset"] != asset:
+                        s["halted_auto"] = "strategy_position_mismatch"
+                        break
+                    if asset in s["manual"]:
+                        s["skipped_asset"] = asset
+                        continue  # Never net the bot and manual units in the same broker symbol.
+                    ensure_asset(self.api, asset, side)
+                    notional = min(float(event["notional"]), float(account["cash"]) * .98,
+                                   float(account["equity"]) * book.cfg.max_exposure)
+                    if notional < CRYPTO_MIN:
+                        s["halted_auto"] = "alpaca_min_order_10_usd"
+                        break
+                    size = {"notional": amount_string(notional, 2)}
+                elif s["skipped_asset"] == asset:
+                    s["skipped_asset"] = None
+                    continue
+                else:
+                    if s["auto_asset"] != asset:
+                        s["halted_auto"] = "paper_position_missing"
+                        break
+                    held = owned(positions, asset)
+                    if not held or abs(float(held["qty"]) - s["auto_qty"]) > 1e-8:
+                        s["halted_auto"] = "paper_position_mismatch"
+                        break
+                    size = {"qty": amount_string(float(held["qty"]), 9)}
+                client_id = "hv2a-" + f"{index:012x}"
+                payload = {"symbol": broker_symbol(asset), "side": side, "type": "market",
+                           "time_in_force": "gtc", "client_order_id": client_id, **size}
+                s["pending"] = {"owner": "auto", "client_id": client_id, "payload": payload,
+                                "asset": asset, "side": side, "index": index, "created_at": time.time()}
+                self.save(s)
+                order = self.api.submit(payload)
+                if order.get("client_order_id") != client_id:
+                    raise BrokerError("Respuesta inesperada; reconcilia en Alpaca")
+                self.reconcile(s)
+                return
             self.save(s)
-            self.sync(book)
-            return
-        self.save(s)

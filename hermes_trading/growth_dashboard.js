@@ -209,7 +209,7 @@ $('manual-asset').addEventListener('change',()=>loadQuote());
 $('manual-mode').addEventListener('change',()=>{
   manualAccount=null;$('manual-message').textContent='';
   $('manual-rules').textContent=paperMode()
-    ? 'Alpaca paper: compra cripto mínima 10 USD, ETF mínima 5 USD; se reserva 2 % del efectivo. Venta solo de unidades propias. Orden de mercado real dentro de la cuenta paper; el precio final puede variar.'
+    ? 'Alpaca paper compartida: compra cripto mínima 10 USD, ETF mínima 5 USD; se reserva 2 % del efectivo común. Solo puedes vender unidades manuales. Una moneda del bot no puede operarse manualmente hasta su salida. El precio de mercado puede variar.'
     : 'Simulación local: compra mínima 5 USD. Para vender, introduce unidades de la tabla. Solo se permiten compras con efectivo y ventas de unidades propias.';
   loadManual();loadQuote();
 });
@@ -260,6 +260,7 @@ async function loadAutoPaper() {
     const response=await fetch('/api/alpaca/auto/state',{cache:'no-store'}),data=await response.json();
     if (!response.ok) throw new Error(data.error||`HTTP ${response.status}`);
     $('alpaca-auto-status').textContent=data.ready?(data.halted?`Detenido: ${data.halted}`:
+      data.pending?'Orden pendiente':data.skipped_asset?`Omitiendo ${data.skipped_asset} manual`:
       data.cursor===null?'Esperando cartera interna sin posición':`Conectado · cuenta ••••${data.account_suffix}`):data.message;
     $('alpaca-auto-balance').textContent=data.ready?`${manualMoney(data.equity)} / ${manualMoney(data.cash)}`:'—';
     $('alpaca-auto-positions').textContent=data.ready?(data.positions.map(p=>`${p.asset} ${manualUnits(p.qty)}`).join(', ')||'Sin posiciones'):'—';

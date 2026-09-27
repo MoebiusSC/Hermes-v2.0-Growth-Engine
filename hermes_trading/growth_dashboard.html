@@ -87,8 +87,8 @@
     <div class="table-wrap"><table><thead><tr><th>Fecha UTC</th><th>Activo</th><th>Régimen</th><th>Salida</th><th>Resultado</th></tr></thead><tbody id="trade-rows"></tbody></table></div></div>
     <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Monitoreo</div><h3>Últimos eventos</h3></div></div><div id="events"></div></div></section>
   <section class="card" style="margin-bottom:13px" aria-label="Operación manual simulada">
-    <div class="card-head"><div><div class="label" style="margin-bottom:6px">Cuenta independiente · simulación</div><h3>Comprar y vender manualmente</h3></div><span class="chip">CRIPTO + ETF · PAPER</span></div>
-    <p class="note">Elige simulación local o una cuenta Alpaca paper dedicada. El bot utiliza otra cuenta Alpaca paper; las operaciones manuales no alteran su cartera interna ni la comparación Hermes vs. V2. Alpaca paper simula ejecuciones, sin fondos reales.</p>
+    <div class="card-head"><div><div class="label" style="margin-bottom:6px">Simulación local o Alpaca paper compartida</div><h3>Comprar y vender manualmente</h3></div><span class="chip">CRIPTO + ETF · PAPER</span></div>
+    <p class="note">El bot y las órdenes manuales usan la misma cuenta Alpaca paper: comparten efectivo y equity. Cada activo pertenece al bot o al operador manual, nunca a ambos a la vez. Las órdenes manuales no alteran la cartera interna usada para comparar Hermes y V2.</p>
     <div class="manual-summary"><span class="small">Efectivo: <strong id="manual-cash">—</strong></span><span class="small">Valor estimado: <strong id="manual-equity">—</strong></span></div>
     <form id="manual-form" class="manual-form">
       <label>Cuenta<select id="manual-mode"><option value="local">Simulación local</option><option value="alpaca">Alpaca paper</option></select></label>
@@ -105,12 +105,12 @@
     <div class="table-wrap"><table><thead><tr><th>Fecha UTC</th><th>Orden</th><th>Activo</th><th>Unidades / precio</th><th>Resultado realizado</th></tr></thead><tbody id="manual-orders"></tbody></table></div>
     <p class="note" id="manual-rules">Simulación local: compra mínima 5 USD. Para vender, introduce unidades de la tabla. Solo se permiten compras con efectivo y ventas de unidades propias.</p>
   </section>
-  <section class="card" style="margin-bottom:13px"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Cuenta paper dedicada · solo cripto</div><h3>Bot V2 en Alpaca paper</h3></div></div>
+  <section class="card" style="margin-bottom:13px"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Cuenta paper compartida · bot solo cripto</div><h3>Bot V2 en Alpaca paper</h3></div></div>
     <div class="row"><span>Conexión</span><strong id="alpaca-auto-status">Pendiente</strong></div>
-    <div class="row"><span>Equity / efectivo de Alpaca</span><strong id="alpaca-auto-balance">—</strong></div>
-    <div class="row"><span>Posiciones en Alpaca</span><strong id="alpaca-auto-positions">—</strong></div>
+    <div class="row"><span>Equity / efectivo compartidos</span><strong id="alpaca-auto-balance">—</strong></div>
+    <div class="row"><span>Posición atribuida al bot</span><strong id="alpaca-auto-positions">—</strong></div>
     <div class="row"><span>Última orden</span><strong id="alpaca-auto-last">—</strong></div>
-    <p class="note">El bot refleja órdenes paper solo cuando su cartera interna está inicialmente sin posiciones. Si falta una cuenta dedicada, hay órdenes abiertas o divergen las posiciones, detiene el envío a Alpaca y muestra el motivo. La curva de comparación sigue usando la cartera interna.</p>
+    <p class="note">El bot empieza a reflejar órdenes cuando su cartera interna está sin posiciones. Si una moneda ya pertenece al operador manual, omite esa operación completa; si las posiciones divergen, suspende el envío a Alpaca. El saldo Alpaca mezcla ambos orígenes y no mide la rentabilidad aislada del bot. La curva de comparación usa la cartera interna.</p>
   </section>
   <section class="grid">
     <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Investigación cuantitativa</div><h3>Optimización automática</h3></div></div>

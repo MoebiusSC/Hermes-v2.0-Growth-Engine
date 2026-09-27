@@ -67,11 +67,11 @@ def handler_factory(state_path: Path, password: str, quote_provider=manual_quote
                     paper_accounts: tuple | None = None):
     wallet = ManualWallet(state_path.with_name("manual_account.json"), quote_provider)
     if paper_accounts is None and configured():
-        paper_accounts = (from_env("manual"), from_env("auto"))
-    paper_manual = (PaperManual(state_path.with_name("alpaca_manual.json"), *paper_accounts)
-                    if paper_accounts else None)
-    paper_auto = (PaperAuto(state_path.with_name("alpaca_auto.json"), paper_accounts[1], paper_accounts[0])
-                  if paper_accounts else None)
+        paper_accounts = (from_env(),)
+    paper_api = paper_accounts[0] if paper_accounts else None
+    shared_path = state_path.with_name("alpaca_shared.json")
+    paper_manual = PaperManual(shared_path, paper_api) if paper_api else None
+    paper_auto = PaperAuto(shared_path, paper_api) if paper_api else None
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "HermesGrowth/2"
@@ -119,7 +119,7 @@ def handler_factory(state_path: Path, password: str, quote_provider=manual_quote
                 self._json(200, result)
             elif path in ("/api/alpaca/manual/state", "/api/alpaca/auto/state"):
                 if not paper_manual:
-                    self._json(200, {"ready": False, "message": "Pendiente de configurar dos cuentas Alpaca paper"})
+                    self._json(200, {"ready": False, "message": "Pendiente de configurar la cuenta Alpaca paper"})
                     return
                 try:
                     self._json(200, paper_manual.state() if path.endswith("manual/state") else paper_auto.state())
@@ -164,7 +164,7 @@ def handler_factory(state_path: Path, password: str, quote_provider=manual_quote
                     raise OrderError("Tamaño de solicitud inválido")
                 data = json.loads(self.rfile.read(size))
                 if path == "/api/alpaca/manual/order" and not paper_manual:
-                    self._json(503, {"error": "Pendiente de configurar dos cuentas Alpaca paper"})
+                    self._json(503, {"error": "Pendiente de configurar la cuenta Alpaca paper"})
                     return
                 self._json(200, {"order": paper_manual.order(data) if path == "/api/alpaca/manual/order" else wallet.order(data)})
             except (OrderError, json.JSONDecodeError) as exc:

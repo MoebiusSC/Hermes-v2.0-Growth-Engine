@@ -11,7 +11,7 @@ import httpx
 from pathlib import Path
 
 from hermes_trading.alpaca_paper_bridge import (BrokerError, PaperAPI, PaperAuto, PaperManual,
-                                                 amount_string, broker_symbol, distinct)
+                                                 amount_string, broker_symbol)
 from hermes_trading.growth import GrowthConfig, Portfolio
 from hermes_trading.growth_web import handler_factory
 from hermes_trading.growth_run import _save
@@ -75,90 +75,87 @@ class PaperBridgeTests(unittest.TestCase):
         self.assertIn("BTC%2FUSD",seen[0][0])
         self.assertEqual(seen[0][1],"paper-key")
 
-    def test_manual_orders_use_separate_paper_account_and_reconcile_unknown_response(self):
-        manual, auto = FakeAPI("manual1234"), FakeAPI("auto4567")
+    def test_manual_orders_share_paper_account_and_reconcile_unknown_response(self):
+        api = FakeAPI("paper1234")
         with tempfile.TemporaryDirectory() as folder:
-            wallet=PaperManual(Path(folder)/"manual.json",manual,auto)
+            wallet=PaperManual(Path(folder)/"shared.json",api)
             buy={"id":"manual0001","asset":"BTC/USDT","side":"buy","amount":10}
-            manual.lose_response=True
+            api.lose_response=True
             with self.assertRaises(BrokerError): wallet.order(buy)
-            self.assertEqual(manual.posts,1)
+            self.assertEqual(api.posts,1)
             self.assertIsNotNone(wallet.load()["pending"])
             self.assertEqual(wallet.order(buy)["status"],"filled")
-            self.assertEqual(manual.posts,1)
+            self.assertEqual(api.posts,1)
             self.assertIsNone(wallet.load()["pending"])
             self.assertAlmostEqual(wallet.state()["positions"]["BTC/USDT"]["qty"],.1)
             with self.assertRaisesRegex(ValueError,"unidades"):
                 wallet.order({"id":"manual0002","asset":"BTC/USDT","side":"sell","amount":.2})
             wallet.order({"id":"manual0003","asset":"BTC/USDT","side":"sell","amount":.1})
             self.assertFalse(wallet.state()["positions"])
-            self.assertEqual(auto.posts,0)
 
-    def test_distinct_accounts_and_precision(self):
-        a=FakeAPI("same")
-        with self.assertRaises(BrokerError): distinct(a,a)
+    def test_precision(self):
         self.assertEqual(broker_symbol("SOL/USDT"),"SOL/USD")
         self.assertEqual(amount_string(.1234567899,9),"0.123456789")
 
     def test_auto_mirror_only_fresh_events_after_flat_initialization(self):
-        manual,auto=FakeAPI("manual"),FakeAPI("auto")
+        api=FakeAPI("paper")
         book=Portfolio(GrowthConfig())
         with tempfile.TemporaryDirectory() as folder:
-            mirror=PaperAuto(Path(folder)/"auto.json",auto,manual)
+            mirror=PaperAuto(Path(folder)/"shared.json",api)
             mirror.sync(book)
             self.assertEqual(mirror.load()["cursor"],0)
             now=int(time.time()*1000)
             book.state["position"]={"asset":"BTC/USDT"}
             book.state["events"].append({"ts":now,"event":"entry","asset":"BTC/USDT","notional":12})
             mirror.sync(book)
-            self.assertEqual(auto.posts,1)
+            self.assertEqual(api.posts,1)
             self.assertEqual(mirror.load()["cursor"],1)
             book.state["position"]=None
             book.state["events"].append({"ts":now,"event":"exit","asset":"BTC/USDT"})
             mirror.sync(book)
-            self.assertEqual(auto.posts,2)
+            self.assertEqual(api.posts,2)
             self.assertEqual(mirror.load()["cursor"],2)
-            self.assertFalse(auto.holdings)
-            self.assertIsNone(mirror.load()["halted"])
+            self.assertFalse(api.holdings)
+            self.assertIsNone(mirror.load()["halted_auto"])
 
     def test_auto_does_not_import_existing_strategy_position(self):
-        manual,auto=FakeAPI("manual"),FakeAPI("auto")
+        api=FakeAPI("paper")
         book=Portfolio(GrowthConfig())
         book.state["position"]={"asset":"BTC/USDT"}
         with tempfile.TemporaryDirectory() as folder:
-            mirror=PaperAuto(Path(folder)/"auto.json",auto,manual)
+            mirror=PaperAuto(Path(folder)/"shared.json",api)
             mirror.sync(book)
             self.assertIsNone(mirror.load()["cursor"])
-            self.assertEqual(auto.posts,0)
+            self.assertEqual(api.posts,0)
 
     def test_auto_halts_on_existing_broker_position_or_stale_signal(self):
-        manual,auto=FakeAPI("manual"),FakeAPI("auto")
+        api=FakeAPI("paper")
         book=Portfolio(GrowthConfig())
         with tempfile.TemporaryDirectory() as folder:
-            path=Path(folder)/"auto.json"
-            auto.holdings["SPY"]={"qty":.1}
-            mirror=PaperAuto(path,auto,manual)
-            mirror.sync(book)
-            self.assertEqual(mirror.load()["halted"],"account_not_empty")
-            self.assertEqual(auto.posts,0)
-        auto.holdings.clear()
+            path=Path(folder)/"shared.json"
+            api.holdings["SPY"]={"qty":.1}
+            mirror=PaperAuto(path,api)
+            with self.assertRaisesRegex(BrokerError,"vacía"):
+                mirror.sync(book)
+            self.assertEqual(api.posts,0)
+        api.holdings.clear()
         with tempfile.TemporaryDirectory() as folder:
-            mirror=PaperAuto(Path(folder)/"auto.json",auto,manual)
+            mirror=PaperAuto(Path(folder)/"shared.json",api)
             mirror.sync(book)
             book.state["position"]={"asset":"BTC/USDT"}
             book.state["events"].append({"ts":int(time.time()*1000)-180_000,
                                           "event":"entry","asset":"BTC/USDT","notional":12})
             mirror.sync(book)
-            self.assertEqual(mirror.load()["halted"],"stale_strategy_event")
-            self.assertEqual(auto.posts,0)
+            self.assertEqual(mirror.load()["halted_auto"],"stale_strategy_event")
+            self.assertEqual(api.posts,0)
 
-    def test_authenticated_dashboard_routes_paper_orders_to_manual_account_only(self):
-        manual,auto=FakeAPI("manual"),FakeAPI("auto")
+    def test_authenticated_dashboard_routes_paper_orders_to_shared_account(self):
+        api=FakeAPI("paper")
         with tempfile.TemporaryDirectory() as folder:
             state=Path(folder)/"account.json"
             _save(Portfolio(GrowthConfig()),state)
             server=ThreadingHTTPServer(("127.0.0.1",0),handler_factory(
-                state,"a-long-unique-password",paper_accounts=(manual,auto)))
+                state,"a-long-unique-password",paper_accounts=(api,)))
             thread=threading.Thread(target=server.serve_forever,daemon=True)
             thread.start()
             try:
@@ -173,11 +170,64 @@ class PaperBridgeTests(unittest.TestCase):
                 request=urllib.request.Request(base+"/api/alpaca/manual/order",data=data,headers=headers,method="POST")
                 with urllib.request.urlopen(request,timeout=3) as response:
                     self.assertEqual(json.load(response)["order"]["status"],"filled")
-                self.assertEqual(manual.posts,1)
-                self.assertEqual(auto.posts,0)
+                self.assertEqual(api.posts,1)
                 self.assertEqual(json.loads(state.read_text())["state"]["cash"],50)
             finally:
                 server.shutdown();server.server_close();thread.join(timeout=3)
+
+    def test_manual_cannot_sell_bot_position_and_bot_preserves_manual_etf(self):
+        api=FakeAPI("paper")
+        book=Portfolio(GrowthConfig())
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"shared.json"
+            manual, mirror=PaperManual(path,api),PaperAuto(path,api)
+            manual.order({"id":"manual0001","asset":"SPY","side":"buy","amount":10})
+            mirror.sync(book)
+            now=int(time.time()*1000)
+            book.state["position"]={"asset":"BTC/USDT"}
+            book.state["events"].append({"ts":now,"event":"entry","asset":"BTC/USDT","notional":12})
+            mirror.sync(book)
+            self.assertEqual(api.posts,2)
+            self.assertEqual(set(api.holdings),{"SPY","BTC/USD"})
+            self.assertEqual(list(manual.state()["positions"]),["SPY"])
+            self.assertEqual(mirror.state()["positions"][0]["asset"],"BTC/USDT")
+            with self.assertRaisesRegex(BrokerError,"pertenece al bot"):
+                manual.order({"id":"manual0002","asset":"BTC/USDT","side":"sell","amount":.12})
+            book.state["position"]=None
+            book.state["events"].append({"ts":now,"event":"exit","asset":"BTC/USDT"})
+            mirror.sync(book)
+            self.assertIn("SPY",api.holdings)
+            self.assertNotIn("BTC/USD",api.holdings)
+
+    def test_bot_skips_manual_symbol_until_strategy_exits(self):
+        api=FakeAPI("paper")
+        book=Portfolio(GrowthConfig())
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"shared.json"
+            manual, mirror=PaperManual(path,api),PaperAuto(path,api)
+            manual.order({"id":"manual0001","asset":"BTC/USDT","side":"buy","amount":10})
+            mirror.sync(book)
+            now=int(time.time()*1000)
+            book.state["position"]={"asset":"BTC/USDT"}
+            book.state["events"].append({"ts":now,"event":"entry","asset":"BTC/USDT","notional":12})
+            mirror.sync(book)
+            self.assertEqual(api.posts,1)
+            self.assertEqual(mirror.state()["skipped_asset"],"BTC/USDT")
+            book.state["position"]=None
+            book.state["events"].append({"ts":now,"event":"exit","asset":"BTC/USDT"})
+            mirror.sync(book)
+            self.assertEqual(api.posts,1)
+            self.assertIsNone(mirror.state()["skipped_asset"])
+
+    def test_external_position_change_blocks_new_orders(self):
+        api=FakeAPI("paper")
+        with tempfile.TemporaryDirectory() as folder:
+            manual=PaperManual(Path(folder)/"shared.json",api)
+            manual.state()
+            api.holdings["BTC/USD"]={"qty":.1}
+            with self.assertRaisesRegex(BrokerError,"difieren"):
+                manual.order({"id":"manual0001","asset":"ETH/USDT","side":"buy","amount":10})
+            self.assertEqual(api.posts,0)
 
 
 if __name__ == "__main__": unittest.main()
