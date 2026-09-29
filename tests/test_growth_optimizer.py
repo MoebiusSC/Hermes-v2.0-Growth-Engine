@@ -45,7 +45,7 @@ class OptimizerTests(unittest.TestCase):
         self.assertIsNone(forward_verdict(meta, state, 49, 13 * DAY_MS))
         self.assertEqual(forward_verdict(meta, state, 49, 14 * DAY_MS), "revert")
         self.assertEqual(forward_verdict(meta, state, 50.2, 14 * DAY_MS), "confirm")
-        state["position"] = {"asset": "BTC/USDT"}
+        state["positions"]["BTC/USDT"] = {"asset": "BTC/USDT"}
         self.assertIsNone(forward_verdict(meta, state, 49, 14 * DAY_MS))
 
     def test_latest_holdout_and_history_coverage_gate_application(self):
