@@ -52,7 +52,7 @@ class GrowthTests(unittest.TestCase):
         self.assertEqual(p.state["trades"][0]["strategy"], "sui_ema_26_55")
 
     def test_sui_replica_only_fires_on_closed_hour_bullish_cross(self):
-        bars = {"t": [3 * HOUR_MS + 45 * 60_000], "open": [100.], "high": [101.],
+        bars = {"t": [59 * HOUR_MS + 45 * 60_000], "open": [100.], "high": [101.],
                 "low": [99.], "close": [100.]}
         hourly = {"t": [i * HOUR_MS for i in range(60)], "close": [100.] * 60}
         fast = np.full(60, np.nan)
