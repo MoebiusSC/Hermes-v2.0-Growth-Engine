@@ -43,17 +43,21 @@ def snapshot(path: Path) -> dict:
     cfg = GrowthConfig(**{**raw, "assets": tuple(raw["assets"])})
     book = Portfolio(cfg, saved["state"])
     s = book.state
-    position = s["position"]
+    positions = [s["positions"][a] for a in sorted(s["positions"])]
     return {
         "ready": True,
         "updated_at": path.stat().st_mtime,
         "initial_capital": cfg.capital,
         "assets": cfg.assets,
         "metrics": report(book),
-        "position": ({k: position.get(k) for k in ("asset", "entry", "qty", "stop", "target", "regime",
-                                                        "strategy", "target_r", "opened_ms")}
-                     if position else None),
-        "risk": {key: getattr(cfg, key) for key in ("risk_per_trade", "max_exposure", "daily_loss",
+        "positions": [{k: position.get(k) for k in ("asset", "entry", "qty", "stop", "target", "regime",
+                                                       "strategy", "target_r", "opened_ms", "risk_amount")}
+                      for position in positions],
+        "position": ({k: positions[0].get(k) for k in ("asset", "entry", "qty", "stop", "target", "regime",
+                                                       "strategy", "target_r", "opened_ms", "risk_amount")}
+                     if positions else None),
+        "risk": {key: getattr(cfg, key) for key in ("risk_per_trade", "max_exposure", "max_positions",
+                                                   "max_portfolio_risk", "max_total_exposure", "daily_loss",
                                                    "weekly_loss", "monthly_drawdown")},
         "curve": s["curve"][-3000:],
         "trades": s["trades"][-100:][::-1],
