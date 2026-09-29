@@ -24,7 +24,8 @@ def assess(base: GrowthConfig, trial: GrowthConfig, candles: dict, hourly: dict,
     if base.assets != trial.assets or base.capital != trial.capital:
         raise ValueError("both configurations must use the same assets and capital")
     # Risk and cost parameters are owner controlled; experiments only adjust alpha.
-    frozen = ("risk_per_trade", "max_exposure", "daily_loss", "weekly_loss", "monthly_drawdown",
+    frozen = ("risk_per_trade", "max_exposure", "max_positions", "max_portfolio_risk",
+              "max_total_exposure", "daily_loss", "weekly_loss", "monthly_drawdown",
               "min_order_usd", "fee", "slippage", "spread")
     if any(getattr(base, field) != getattr(trial, field) for field in frozen):
         raise ValueError("candidate may change only alpha parameters")
