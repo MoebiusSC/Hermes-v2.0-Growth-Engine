@@ -27,26 +27,29 @@ class GrowthTests(unittest.TestCase):
     def _bar(self, price=100, low=99, high=101):
         return {"open": price, "high": high, "low": low, "close": price}
 
-    def test_shared_account_next_bar_rank_and_risk(self):
+    def test_shared_account_multiple_positions_respect_global_risk(self):
         p = Portfolio(self.cfg)
-        p.decide([self._signal("ETH/USDT"), {**self._signal(), "strength": 0.5}], BAR_MS)
-        self.assertIsNone(p.state["position"])
-        p.on_bar("BTC/USDT", self._bar(), BAR_MS)
-        pos = p.state["position"]
-        self.assertEqual(pos["asset"], "BTC/USDT")
-        self.assertLessEqual(pos["qty"] * pos["entry"], self.cfg.capital * self.cfg.max_exposure + 1e-8)
-        worst = pos["qty"] * (pos["entry"] - pos["stop"] +
-                              pos["entry"] * (2 * self.cfg.fee + 2 * self.cfg.slippage + self.cfg.spread))
-        self.assertLessEqual(worst, self.cfg.capital * self.cfg.risk_per_trade + 1e-8)
-        p.decide([self._signal("ETH/USDT", 2 * BAR_MS)], 2 * BAR_MS)
-        self.assertIsNone(p.state["pending"])
+        signals = [self._signal('ETH/USDT'), {**self._signal(), 'strength': 0.5},
+                   self._signal('SOL/USDT')]
+        p.decide(signals, BAR_MS)
+        self.assertFalse(p.state['positions'])
+        self.assertEqual(set(p.state['pending']), {'BTC/USDT', 'ETH/USDT', 'SOL/USDT'})
+        for asset in p.pending_assets():
+            p.on_bar(asset, self._bar(), BAR_MS)
+        self.assertEqual(len(p.state['positions']), 3)
+        self.assertLessEqual(p.open_risk(), p.equity() * self.cfg.max_portfolio_risk + 1e-8)
+        self.assertLessEqual(p.gross_exposure(), p.equity() * self.cfg.max_total_exposure + 1e-8)
+        for pos in p.state['positions'].values():
+            self.assertLessEqual(pos['risk_amount'], pos['equity_at_entry'] * self.cfg.risk_per_trade + 1e-8)
+        p.decide([self._signal('BTC/USDT', 2 * BAR_MS)], 2 * BAR_MS)
+        self.assertFalse(p.state['pending'])
 
     def test_signal_specific_target_and_strategy_are_persisted(self):
         p = Portfolio(self.cfg)
         signal = {**self._signal(), "target_r": 3.0, "strategy": "sui_ema_26_55"}
         p.decide([signal], BAR_MS)
         p.on_bar("BTC/USDT", self._bar(), BAR_MS)
-        pos = p.state["position"]
+        pos = p.state["positions"]["BTC/USDT"]
         self.assertAlmostEqual((pos["target"] - pos["entry"]) / (pos["entry"] - pos["stop"]), 3.0, places=6)
         self.assertEqual(pos["strategy"], "sui_ema_26_55")
         p.on_bar("BTC/USDT", self._bar(100, pos["stop"] + .1, pos["target"] + 1), 2 * BAR_MS)
@@ -74,7 +77,7 @@ class GrowthTests(unittest.TestCase):
         p = Portfolio(self.cfg)
         p.decide([self._signal()], BAR_MS)
         p.on_bar("BTC/USDT", self._bar(), BAR_MS)
-        pos = p.state["position"]
+        pos = p.state["positions"]["BTC/USDT"]
         p.on_bar("BTC/USDT", self._bar(100, pos["stop"] - 1, pos["target"] + 1), 2 * BAR_MS)
         self.assertEqual(p.state["trades"][0]["reason"], "stop")
         self.assertLess(p.equity(), self.cfg.capital)
@@ -82,12 +85,12 @@ class GrowthTests(unittest.TestCase):
     def test_paper_fill_uses_current_quote_and_rejects_late_fill(self):
         p = Portfolio(self.cfg)
         p.decide([self._signal()], BAR_MS)
-        p.paper_fill_pending(105, BAR_MS + 20_000)
-        self.assertGreater(p.state["position"]["entry"], 105)
+        p.paper_fill_pending("BTC/USDT", 105, BAR_MS + 20_000)
+        self.assertGreater(p.state["positions"]["BTC/USDT"]["entry"], 105)
         q = Portfolio(self.cfg)
         q.decide([self._signal()], BAR_MS)
-        q.paper_fill_pending(105, BAR_MS + 61_000)
-        self.assertIsNone(q.state["position"])
+        q.paper_fill_pending("BTC/USDT", 105, BAR_MS + 61_000)
+        self.assertFalse(q.state["positions"])
 
     def test_gap_latches_new_entries(self):
         p = Portfolio(self.cfg)
@@ -95,7 +98,7 @@ class GrowthTests(unittest.TestCase):
         p.on_bar("BTC/USDT", self._bar(), 3 * BAR_MS)
         self.assertEqual(p.state["halted"], "market_data_gap")
         p.decide([self._signal(ts=4 * BAR_MS)], 4 * BAR_MS)
-        self.assertIsNone(p.state["pending"])
+        self.assertFalse(p.state["pending"])
 
     def test_gap_recovers_only_after_continuous_fresh_bars_when_flat(self):
         p = Portfolio(self.cfg)
@@ -168,6 +171,24 @@ class GrowthTests(unittest.TestCase):
         self.assertAlmostEqual(result["sui_ema_26_55"]["return"], 0.04)
         self.assertEqual(result["sui_ema_26_55"]["win_rate"], 1.0)
 
+    def test_legacy_single_position_state_migrates_without_reset(self):
+        legacy_cfg = dataclasses.asdict(self.cfg)
+        for field in ('max_positions', 'max_portfolio_risk', 'max_total_exposure'):
+            legacy_cfg.pop(field)
+        legacy_state = Portfolio(self.cfg).state
+        legacy_state['position'] = {'asset': 'BTC/USDT', 'entry': 100.0, 'qty': 0.1, 'cost': 10.01,
+                                    'stop': 98.0, 'target': 105.0, 'opened_ms': 1,
+                                    'equity_at_entry': 50.0, 'regime': 'RANGE'}
+        legacy_state.pop('positions')
+        legacy_state['pending'] = None
+        legacy_state['cash'] = 39.99
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'account.json'
+            path.write_text(json.dumps({'config': legacy_cfg, 'state': legacy_state}))
+            restored = _restore(self.cfg, path)
+        self.assertIn('BTC/USDT', restored.state['positions'])
+        self.assertFalse(restored.state['pending'])
+        self.assertAlmostEqual(restored.equity({'BTC/USDT': 100.0}), 49.99)
     def test_drawdown_latches_across_restart(self):
         p = Portfolio(self.cfg)
         p.state["cash"] = 46.5
@@ -175,7 +196,7 @@ class GrowthTests(unittest.TestCase):
         self.assertEqual(p.state["halted"], "drawdown_limit")
         recovered = Portfolio(self.cfg, p.state)
         recovered.decide([self._signal(ts=2 * BAR_MS)], 2 * BAR_MS)
-        self.assertIsNone(recovered.state["pending"])
+        self.assertFalse(recovered.state["pending"])
 
     def test_score_uses_mtm_for_composite(self):
         goal = {"target_return_30d": 0.05, "max_drawdown": 0.08, "min_sharpe": 1.2}
