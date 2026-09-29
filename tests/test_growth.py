@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from hermes_trading.growth import (BAR_MS, HOUR_MS, GrowthConfig, Portfolio, candidate,
                                    sui_replica_candidate)
