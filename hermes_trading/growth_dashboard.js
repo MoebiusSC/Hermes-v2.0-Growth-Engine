@@ -109,6 +109,7 @@ function renderStrategies(data) {
   for (const name of ['hermes_core','sui_ema_26_55']) {
     const item=rows[name]||{trades:0,pnl:0,return:0,win_rate:0,profit_factor:null,max_drawdown:0};
     const pnl=Number(item.pnl??0);
+    const row=tbody.insertRow();
     const values=[labels[name]||name,String(item.trades??0),
       (pnl>=0?'+':'')+pnl.toFixed(4)+' USDT',
       pct(item.return??0),pct(item.win_rate??0),
