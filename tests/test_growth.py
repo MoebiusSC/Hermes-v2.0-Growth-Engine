@@ -208,7 +208,7 @@ class GrowthTests(unittest.TestCase):
         self.assertLess(score(trade, goal, curve), score(trade, goal))
 
     def test_lab_cannot_modify_risk(self):
-        altered = dataclasses.replace(self.cfg, risk_per_trade=0.02)
+        altered = dataclasses.replace(self.cfg, risk_per_trade=0.01)
         with self.assertRaisesRegex(ValueError, "alpha"):
             assess(self.cfg, altered, {}, {})
 
