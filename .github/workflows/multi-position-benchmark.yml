@@ -16,10 +16,25 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
       - run: pip install -e .
+      - name: Build single-position control config
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data=json.loads(Path("growth.json").read_text())
+          data["max_positions"]=1
+          data["max_portfolio_risk"]=data["risk_per_trade"]
+          data["max_total_exposure"]=data["max_exposure"]
+          Path("growth.single.json").write_text(json.dumps(data,indent=2)+"\n")
+          PY
+      - name: Run 365-day single-position control
+        run: python -m hermes_trading.growth_run backtest --config growth.single.json --days 365 | tee single_position_365d.json
       - name: Run 365-day multi-position benchmark
-        run: python -m hermes_trading.growth_run backtest --days 365 | tee multi_position_365d.json
+        run: python -m hermes_trading.growth_run backtest --config growth.json --days 365 | tee multi_position_365d.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: multi-position-365d
-          path: multi_position_365d.json
+          name: multi-position-comparison-365d
+          path: |
+            single_position_365d.json
+            multi_position_365d.json
