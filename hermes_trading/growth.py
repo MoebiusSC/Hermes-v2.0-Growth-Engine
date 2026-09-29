@@ -1,6 +1,7 @@
 """Hermes v2 research and paper portfolio. Long spot only, one shared USD account.
 
-Bar-close signals become orders at the next bar open. Stops are checked before targets.
+Bar-close signals become orders at the next bar open. Multiple assets may be open
+simultaneously under one global risk and exposure budget. Stops are checked before targets.
 The same Portfolio.on_bar method is used by historical replay and the paper worker.
 """
 from __future__ import annotations
@@ -30,6 +31,9 @@ class GrowthConfig:
     assets: tuple[str, ...] = ("BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "LINK/USDT", "SUI/USDT")
     risk_per_trade: float = 0.005
     max_exposure: float = 0.50
+    max_positions: int = 3
+    max_portfolio_risk: float = 0.015
+    max_total_exposure: float = 0.90
     daily_loss: float = 0.015
     weekly_loss: float = 0.03
     monthly_drawdown: float = 0.06
@@ -49,9 +53,14 @@ class GrowthConfig:
             raise ValueError("positive capital and unique assets required")
         if not all("/" in asset for asset in self.assets):
             raise ValueError("v2 accepts spot crypto pairs only")
-        for name in ("risk_per_trade", "max_exposure", "daily_loss", "weekly_loss", "monthly_drawdown"):
+        for name in ("risk_per_trade", "max_exposure", "max_portfolio_risk", "max_total_exposure",
+                     "daily_loss", "weekly_loss", "monthly_drawdown"):
             if not 0 < getattr(self, name) < 1:
                 raise ValueError(f"{name} must be between zero and one")
+        if not isinstance(self.max_positions, int) or self.max_positions < 1:
+            raise ValueError("max_positions must be a positive integer")
+        if self.max_portfolio_risk < self.risk_per_trade:
+            raise ValueError("max_portfolio_risk cannot be below risk_per_trade")
         if any(getattr(self, x) < 0 for x in ("fee", "slippage", "spread")):
             raise ValueError("negative trading costs")
         if self.min_order_usd <= 0 or self.stop_atr <= 0 or self.target_r <= 0:
@@ -152,22 +161,82 @@ def signals_for_asset(asset: str, bars: dict, hourly: dict, cfg: GrowthConfig) -
 
 
 class Portfolio:
-    """One shared cash balance. State can be serialized and recovered without resetting risk."""
+    """Shared-cash, multi-position spot portfolio with a global open-risk budget."""
 
     def __init__(self, cfg: GrowthConfig, state: dict | None = None):
         self.cfg = cfg
         self.state = state if state is not None else {
-            "cash": cfg.capital, "position": None, "pending": None, "marks": {},
+            "cash": cfg.capital, "positions": {}, "pending": {}, "marks": {},
             "anchors": {}, "high_water": cfg.capital, "halted": None,
             "last_bar": {}, "trades": [], "curve": [], "events": [],
         }
+        self._normalise_state()
+
+    def _normalise_state(self) -> None:
+        """Migrate the legacy single-position state without changing balances or trades."""
+        s = self.state
+        if "positions" not in s:
+            legacy = s.pop("position", None)
+            s["positions"] = {legacy["asset"]: legacy} if legacy else {}
+        elif not isinstance(s["positions"], dict):
+            s["positions"] = {p["asset"]: p for p in s["positions"]}
+        pending = s.get("pending")
+        if pending is None:
+            s["pending"] = {}
+        elif isinstance(pending, dict) and "asset" in pending:
+            s["pending"] = {pending["asset"]: pending}
+        elif not isinstance(pending, dict):
+            s["pending"] = {}
+        s.setdefault("marks", {})
+        s.setdefault("anchors", {})
+        s.setdefault("high_water", self.cfg.capital)
+        s.setdefault("halted", None)
+        s.setdefault("last_bar", {})
+        s.setdefault("trades", [])
+        s.setdefault("curve", [])
+        s.setdefault("events", [])
 
     def equity(self, prices: Mapping[str, float] | None = None) -> float:
         s = self.state
-        pos = s["position"]
         marks = prices or s["marks"]
-        mark = marks.get(pos["asset"], pos["entry"]) if pos else 0.0
-        return float(s["cash"] + (pos["qty"] * mark if pos else 0.0))
+        value = float(s["cash"])
+        for asset, pos in s["positions"].items():
+            mark = float(marks.get(asset, pos["entry"]))
+            value += float(pos["qty"]) * mark
+        return value
+
+    def gross_exposure(self, prices: Mapping[str, float] | None = None) -> float:
+        s = self.state
+        marks = prices or s["marks"]
+        return float(sum(float(pos["qty"]) * float(marks.get(asset, pos["entry"]))
+                         for asset, pos in s["positions"].items()))
+
+    def open_risk(self) -> float:
+        cfg = self.cfg
+        total = 0.0
+        for pos in self.state["positions"].values():
+            if "risk_amount" in pos:
+                total += float(pos["risk_amount"])
+            else:
+                per_unit = max(0.0, float(pos["entry"]) - float(pos["stop"]))
+                per_unit += float(pos["entry"]) * (2 * cfg.fee + 2 * cfg.slippage + cfg.spread)
+                total += float(pos["qty"]) * per_unit
+        return float(total)
+
+    def risk_snapshot(self) -> dict:
+        eq = self.equity()
+        budget = eq * self.cfg.max_portfolio_risk
+        exposure_cap = eq * self.cfg.max_total_exposure
+        return {
+            "open_risk": self.open_risk(),
+            "risk_budget": budget,
+            "risk_utilization": self.open_risk() / budget if budget > 0 else 0.0,
+            "gross_exposure": self.gross_exposure(),
+            "exposure_cap": exposure_cap,
+            "exposure_utilization": self.gross_exposure() / exposure_cap if exposure_cap > 0 else 0.0,
+            "open_positions": len(self.state["positions"]),
+            "max_positions": self.cfg.max_positions,
+        }
 
     def _limits(self, ts: int) -> str | None:
         s, cfg = self.state, self.cfg
@@ -187,51 +256,63 @@ class Portfolio:
             s["halted"] = "drawdown_limit"
         return s["halted"]
 
-    def _close(self, ts: int, price: float, reason: str) -> None:
+    def _close(self, asset: str, ts: int, price: float, reason: str) -> None:
         s, cfg = self.state, self.cfg
-        pos = s["position"]
-        qty = pos["qty"]
+        pos = s["positions"].get(asset)
+        if not pos:
+            return
+        qty = float(pos["qty"])
         proceeds = qty * price * (1 - cfg.fee)
         s["cash"] += proceeds
-        pnl = proceeds - pos["cost"]
+        pnl = proceeds - float(pos["cost"])
         s["trades"].append({"asset": pos["asset"], "opened_ms": pos["opened_ms"], "closed_ms": ts,
                             "entry": pos["entry"], "exit": price, "qty": qty, "pnl": pnl,
                             "pnl_pct": pnl / pos["equity_at_entry"], "reason": reason, "regime": pos["regime"],
                             "strategy": pos.get("strategy", "hermes_core"),
-                            "target_r": pos.get("target_r", cfg.target_r)})
-        s["position"] = None
+                            "target_r": pos.get("target_r", cfg.target_r),
+                            "risk_amount": pos.get("risk_amount")})
+        del s["positions"][asset]
         s["events"].append({"ts": ts, "event": "exit", "asset": pos["asset"], "reason": reason,
                             "strategy": pos.get("strategy", "hermes_core")})
 
     def _open(self, ts: int, bar: dict, signal: dict) -> None:
         s, cfg = self.state, self.cfg
-        if self._limits(ts) or s["position"]:
+        asset = signal["asset"]
+        if (self._limits(ts) or asset in s["positions"] or
+                len(s["positions"]) >= cfg.max_positions):
             return
         entry = float(bar["open"]) * (1 + cfg.slippage + cfg.spread / 2)
         if entry <= 0 or not math.isfinite(entry):
             return
-        dist = signal["stop_fraction"] * entry
+        dist = float(signal["stop_fraction"]) * entry
         risk_per_unit = dist + entry * (2 * cfg.fee + 2 * cfg.slippage + cfg.spread)
         equity = self.equity()
-        notional = min(equity * cfg.risk_per_trade / risk_per_unit * entry,
-                       equity * cfg.max_exposure, s["cash"] / (1 + cfg.fee))
+        remaining_risk = max(0.0, equity * cfg.max_portfolio_risk - self.open_risk())
+        remaining_exposure = max(0.0, equity * cfg.max_total_exposure - self.gross_exposure())
+        target_risk = min(equity * cfg.risk_per_trade, remaining_risk)
+        notional = min(target_risk / risk_per_unit * entry if risk_per_unit > 0 else 0.0,
+                       equity * cfg.max_exposure, remaining_exposure,
+                       s["cash"] / (1 + cfg.fee))
         if notional < cfg.min_order_usd:
-            s["events"].append({"ts": ts, "event": "skip", "reason": "minimum_order_or_risk"})
+            s["events"].append({"ts": ts, "event": "skip", "asset": asset,
+                                "reason": "minimum_order_or_global_risk_budget"})
             return
         qty = notional / entry
+        risk_amount = qty * risk_per_unit
         cost = notional * (1 + cfg.fee)
         s["cash"] -= cost
         target_r = float(signal.get("target_r", cfg.target_r))
         strategy = str(signal.get("strategy", "hermes_core"))
-        s["position"] = {"asset": signal["asset"], "entry": entry, "qty": qty, "cost": cost,
-                         "stop": entry - dist, "target": entry + target_r * dist,
-                         "opened_ms": ts, "equity_at_entry": equity, "regime": signal["regime"],
-                         "strategy": strategy, "target_r": target_r}
-        s["events"].append({"ts": ts, "event": "entry", "asset": signal["asset"], "notional": notional,
-                            "strategy": strategy})
+        s["positions"][asset] = {"asset": asset, "entry": entry, "qty": qty, "cost": cost,
+                                 "stop": entry - dist, "target": entry + target_r * dist,
+                                 "opened_ms": ts, "equity_at_entry": equity, "regime": signal["regime"],
+                                 "strategy": strategy, "target_r": target_r,
+                                 "risk_amount": risk_amount}
+        s["events"].append({"ts": ts, "event": "entry", "asset": asset, "notional": notional,
+                            "risk_amount": risk_amount, "strategy": strategy})
 
     def on_bar(self, asset: str, bar: dict, ts: int) -> None:
-        """Process exactly one completed 15m bar; pending decision must be from an earlier close."""
+        """Process exactly one completed 15m bar; each asset may fill one queued signal."""
         s = self.state
         if asset not in self.cfg.assets or s["last_bar"].get(asset, -1) >= ts:
             return
@@ -244,42 +325,59 @@ class Portfolio:
             return
         last = s["last_bar"].get(asset)
         if last is not None and ts - last > BAR_MS:
-            s["pending"] = None
+            s["pending"] = {}
             s["halted"] = "market_data_gap"
         s["last_bar"][asset] = ts
-        pending = s["pending"]
-        if pending and pending["asset"] == asset and pending["decision_ms"] <= ts:
-            s["pending"] = None
-            if not s["halted"]:
-                self._open(ts, bar, pending)
-        pos = s["position"]
-        if pos and pos["asset"] == asset:
+        pending = s["pending"].pop(asset, None)
+        if pending and pending["decision_ms"] <= ts and not s["halted"]:
+            self._open(ts, bar, pending)
+        pos = s["positions"].get(asset)
+        if pos:
             if bar["low"] <= pos["stop"]:
-                self._close(ts + BAR_MS, min(float(bar["open"]), pos["stop"]) *
+                self._close(asset, ts + BAR_MS, min(float(bar["open"]), pos["stop"]) *
                             (1 - self.cfg.slippage - self.cfg.spread / 2), "stop")
             elif bar["high"] >= pos["target"]:
-                self._close(ts + BAR_MS, max(float(bar["open"]), pos["target"]) *
+                self._close(asset, ts + BAR_MS, max(float(bar["open"]), pos["target"]) *
                             (1 - self.cfg.slippage - self.cfg.spread / 2), "target")
         s["marks"][asset] = float(bar["close"])
         self._limits(ts + BAR_MS)
 
     def decide(self, signals: list[dict], ts: int) -> None:
-        """Rank all assets at one synchronized close; only the strongest may enter next bar."""
-        s = self.state
-        if not s["position"] and not s["pending"] and not self._limits(ts):
-            eligible = [x for x in signals if x and x["decision_ms"] == ts]
-            if eligible:
-                s["pending"] = max(eligible, key=lambda x: (x["strength"], x["asset"]))
+        """Rank signals globally and queue as many as the position/risk budget permits."""
+        s, cfg = self.state, self.cfg
+        if not self._limits(ts):
+            eligible = [x for x in signals if x and x["decision_ms"] == ts
+                        and x["asset"] not in s["positions"] and x["asset"] not in s["pending"]]
+            strongest_by_asset = {}
+            for signal in eligible:
+                current = strongest_by_asset.get(signal["asset"])
+                if current is None or (signal["strength"], signal.get("strategy", "")) > (
+                        current["strength"], current.get("strategy", "")):
+                    strongest_by_asset[signal["asset"]] = signal
+            ranked = sorted(strongest_by_asset.values(),
+                            key=lambda x: (x["strength"], x["asset"]), reverse=True)
+            position_slots = max(0, cfg.max_positions - len(s["positions"]) - len(s["pending"]))
+            eq = self.equity()
+            remaining_risk = max(0.0, eq * cfg.max_portfolio_risk - self.open_risk())
+            nominal_trade_risk = max(eq * cfg.risk_per_trade, 1e-12)
+            risk_slots = int((remaining_risk + 1e-12) // nominal_trade_risk)
+            slots = min(position_slots, risk_slots)
+            for rank, signal in enumerate(ranked[:slots]):
+                s["pending"][signal["asset"]] = {**signal, "rank": rank}
         s["curve"].append({"ts": _day(ts).isoformat(), "equity": self.equity()})
 
-    def paper_fill_pending(self, price: float, ts: int) -> None:
-        """Paper only: use the current observed quote soon after decision, never an old bar open."""
-        signal = self.state["pending"]
+    def pending_assets(self) -> list[str]:
+        return [asset for asset, _ in sorted(self.state["pending"].items(),
+                                              key=lambda item: (item[1].get("rank", 999), item[0]))]
+
+    def paper_fill_pending(self, asset: str, price: float, ts: int) -> None:
+        """Paper only: fill one queued asset from a fresh quote; stale signals are skipped."""
+        signal = self.state["pending"].pop(asset, None)
         if signal is None:
             return
-        self.state["pending"] = None
         if ts - signal["decision_ms"] > 60_000:
-            self.state["events"].append({"ts": ts, "event": "skip", "reason": "late_paper_fill"})
+            self.state["events"].append({"ts": ts, "event": "skip", "asset": asset,
+                                         "reason": "late_paper_fill"})
             return
         if price <= 0 or not math.isfinite(price):
             self.state["halted"] = "invalid_market_data"
@@ -295,7 +393,9 @@ def replay(cfg: GrowthConfig, candles: Mapping[str, dict], hourly: Mapping[str, 
     indices = {asset: {int(t): i for i, t in enumerate(candles[asset]["t"])} for asset in cfg.assets}
     for ts in sorted(by_time):
         signals = []
-        for asset in cfg.assets:
+        pending_order = book.pending_assets()
+        ordered_assets = pending_order + [a for a in cfg.assets if a not in pending_order]
+        for asset in ordered_assets:
             i = indices[asset].get(ts)
             if i is None:
                 continue
