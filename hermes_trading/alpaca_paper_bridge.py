@@ -188,6 +188,9 @@ class SharedPaper:
                 state["auto"][asset] = qty
         if "skipped_assets" not in state:
             state["skipped_assets"] = [state["skipped_asset"]] if state.get("skipped_asset") else []
+        state.pop("auto_asset", None)
+        state.pop("auto_qty", None)
+        state.pop("skipped_asset", None)
         return state
 
     def save(self, state: dict) -> None:
