@@ -152,9 +152,13 @@ class GrowthTests(unittest.TestCase):
     def test_report_attributes_per_strategy_metrics(self):
         p = Portfolio(self.cfg)
         p.state["trades"] = [
-            {"asset": "BTC/USDT", "pnl": 1.0, "closed_ms": 1, "strategy": "hermes_core"},
-            {"asset": "BTC/USDT", "pnl": -0.5, "closed_ms": 2, "strategy": "hermes_core"},
-            {"asset": "SUI/USDT", "pnl": 2.0, "closed_ms": 3, "strategy": "sui_ema_26_55"},
+            {"asset": "BTC/USDT", "pnl": 1.0, "pnl_pct": 0.02, "closed_ms": 1, "strategy": "hermes_core"},
+            {"asset": "BTC/USDT", "pnl": -0.5, "pnl_pct": -0.01, "closed_ms": 2, "strategy": "hermes_core"},
+            {"asset": "SUI/USDT", "pnl": 2.0, "pnl_pct": 0.04, "closed_ms": 3, "strategy": "sui_ema_26_55"},
+        ]
+        p.state["curve"] = [
+            {"ts": "2026-01-01T00:00:00+00:00", "equity": 50.0},
+            {"ts": "2026-01-02T00:00:00+00:00", "equity": 52.5},
         ]
         result = report(p)["strategy_metrics"]
         self.assertEqual(result["hermes_core"]["trades"], 2)
