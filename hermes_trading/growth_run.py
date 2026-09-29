@@ -55,6 +55,41 @@ def _restore(cfg: GrowthConfig, state_path: Path) -> Portfolio:
     return Portfolio(active, saved["state"])
 
 
+def _recent_market_data_complete(book: Portfolio, feeds: dict, now_ms: int) -> bool:
+    """Require three hours of synchronized, complete closed candles before recovery."""
+    if book.state["halted"] != "market_data_gap" or book.state["position"] or book.state["pending"]:
+        return False
+    newest = []
+    for asset in book.cfg.assets:
+        if asset not in feeds:
+            return False
+        bars, hours, _ = feeds[asset]
+        times = bars["t"][-12:]
+        if (len(times) != 12 or any(b - a != BAR_MS for a, b in zip(times, times[1:]))
+                or book.state["last_bar"].get(asset) != times[-1]
+                or not hours["t"] or now_ms - hours["t"][-1] > 2 * 60 * 60_000):
+            return False
+        newest.append(times[-1])
+    return len(set(newest)) == 1 and BAR_MS <= now_ms - newest[0] < 2 * BAR_MS
+
+
+async def _recover_market_gap(book: Portfolio, feeds: dict, now_ms: int, mirror) -> bool:
+    if not _recent_market_data_complete(book, feeds, now_ms):
+        return False
+    if mirror:
+        try:
+            if not await asyncio.to_thread(mirror.recover_transport_halt_if_flat, book):
+                return False
+        except Exception as exc:
+            print(f"paper broker recovery deferred: {type(exc).__name__}: {exc}", flush=True)
+            return False
+    book.state["halted"] = None
+    book.state["events"].append({"ts": now_ms, "event": "market_data_gap_recovered",
+                                 "latest_closed_bar": next(iter(book.state["last_bar"].values())),
+                                 "verified_bars_per_asset": 12, "broker_checked": bool(mirror)})
+    return True
+
+
 async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
     from .adapters import price
     from . import growth_optimizer as optimizer
@@ -149,6 +184,9 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                             try:
                                 i = bars["t"].index(ts)
                             except ValueError:
+                                if book.state["halted"] != "market_data_gap":
+                                    book.state["events"].append({"ts": int(now), "event": "market_data_gap",
+                                                                 "asset": asset, "missing_bar": ts})
                                 book.state["halted"] = "market_data_gap"
                                 continue
                             if ts + BAR_MS > now:
@@ -170,6 +208,10 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                             else:
                                 book.state["pending"] = None
                                 book.state["halted"] = "missing_current_quote"
+                if await _recover_market_gap(book, feeds, int(now), mirror):
+                    print(json.dumps({"event": "market_data_gap_recovered",
+                                      "latest_closed_bar": book.state["events"][-1]["latest_closed_bar"],
+                                      "broker_checked": bool(mirror)}), flush=True)
                 await autotune(int(now))
                 _save(book, state_path, cfg)
                 if mirror:

@@ -139,6 +139,29 @@ class PaperBridgeTests(unittest.TestCase):
             self.assertFalse(api.holdings)
             self.assertIsNone(mirror.load()["halted_auto"])
 
+    def test_transport_warning_clears_only_after_broker_reconciliation(self):
+        api=FakeAPI("paper")
+        book=Portfolio(GrowthConfig())
+        with tempfile.TemporaryDirectory() as folder:
+            mirror=PaperAuto(Path(folder)/"shared.json",api)
+            mirror.sync(book)
+            order=api.submit({"symbol":"BTC/USD","side":"buy","notional":"10",
+                              "client_order_id":"buy1"})
+            api.submit({"symbol":"BTC/USD","side":"sell","qty":order["filled_qty"],
+                        "client_order_id":"sell1"})
+            s=mirror.load()
+            s["last_order"]={"id":"sell1","qty":float(order["filled_qty"]),"status":"filled"}
+            s["halted_auto"]="Alpaca paper no responde; orden sin confirmar"
+            mirror.save(s)
+            self.assertTrue(mirror.recover_transport_halt_if_flat(book))
+            self.assertIsNone(mirror.load()["halted_auto"])
+            self.assertEqual(api.posts,2)
+            s=mirror.load();s["halted_auto"]="Alpaca paper no responde; orden sin confirmar"
+            mirror.save(s);api.holdings["BTC/USD"]={"qty":.1}
+            with self.assertRaises(BrokerError):
+                mirror.recover_transport_halt_if_flat(book)
+            self.assertIsNotNone(mirror.load()["halted_auto"])
+
     def test_auto_does_not_import_existing_strategy_position(self):
         api=FakeAPI("paper")
         book=Portfolio(GrowthConfig())

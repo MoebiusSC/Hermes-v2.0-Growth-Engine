@@ -350,6 +350,36 @@ class PaperManual(SharedPaper):
 
 
 class PaperAuto(SharedPaper):
+    def recover_transport_halt_if_flat(self, book) -> bool:
+        """Clear only a stale transport warning after checking the paper broker."""
+        if book.state["position"] or book.state["pending"]:
+            return False
+        with _LOCK:
+            s = self.load()
+            if s["pending"] or s["auto_asset"] or abs(float(s["auto_qty"])) > 1e-9:
+                return False
+            if s["cursor"] is not None and s["cursor"] != len(book.state["events"]):
+                return False
+            warning = s["halted_auto"]
+            if warning not in (None, "Alpaca paper no responde; orden sin confirmar"):
+                return False
+            self.account(s)  # Confirms identity and account availability.
+            positions = self.api.positions()
+            self.validate(s, positions)  # Includes open orders and manual ownership.
+            if warning:
+                previous = s.get("last_order")
+                if not previous or previous.get("status") != "filled" or not previous.get("id"):
+                    return False
+                order = self.api.by_client_id(previous["id"])
+                if not order or order.get("status") != "filled":
+                    return False
+                if abs(float(order.get("filled_qty") or 0) - float(previous["qty"])) > 1e-8:
+                    return False
+                s["halted_auto"] = None
+                s["transport_recovered_at"] = time.time()
+                self.save(s)
+            return True
+
     def state(self) -> dict:
         with _LOCK:
             s = self.load()

@@ -1,8 +1,10 @@
 import dataclasses
+import asyncio
 import unittest
 
 from hermes_trading.growth import BAR_MS, HOUR_MS, GrowthConfig, Portfolio, candidate
 from hermes_trading.growth_lab import assess
+from hermes_trading.growth_run import _recent_market_data_complete, _recover_market_gap
 from hermes_trading.score import score
 
 
@@ -57,6 +59,21 @@ class GrowthTests(unittest.TestCase):
         self.assertEqual(p.state["halted"], "market_data_gap")
         p.decide([self._signal(ts=4 * BAR_MS)], 4 * BAR_MS)
         self.assertIsNone(p.state["pending"])
+
+    def test_gap_recovers_only_after_continuous_fresh_bars_when_flat(self):
+        p = Portfolio(self.cfg)
+        p.state["halted"] = "market_data_gap"
+        now = 20 * BAR_MS
+        times = list(range(8 * BAR_MS, 20 * BAR_MS, BAR_MS))
+        feeds = {asset: ({"t": times}, {"t": [18 * BAR_MS]}, {}) for asset in self.cfg.assets}
+        p.state["last_bar"] = {asset: times[-1] for asset in self.cfg.assets}
+        self.assertTrue(_recent_market_data_complete(p, feeds, now))
+        broken = {**feeds, "ETH/USDT": ({"t": times[:-2] + [times[-1]]}, {"t": [18 * BAR_MS]}, {})}
+        self.assertFalse(_recent_market_data_complete(p, broken, now))
+        self.assertFalse(asyncio.run(_recover_market_gap(p, broken, now, None)))
+        self.assertTrue(asyncio.run(_recover_market_gap(p, feeds, now, None)))
+        self.assertIsNone(p.state["halted"])
+        self.assertEqual(p.state["events"][-1]["event"], "market_data_gap_recovered")
 
     def test_drawdown_latches_across_restart(self):
         p = Portfolio(self.cfg)
