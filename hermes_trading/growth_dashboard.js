@@ -88,13 +88,15 @@ function drawCurve(points) {
 function renderAssets(data) {
   const tbody=$('asset-rows');tbody.replaceChildren();
   const assets=Array.isArray(data.assets)?data.assets:[];
-  $('asset-count').textContent=`${assets.length} monedas · ${data.position?'1 activa':'0 activas'}`;
+  const positions=Array.isArray(data.positions)?data.positions:[];
+  const byAsset=Object.fromEntries(positions.map(p=>[p.asset,p]));
+  $('asset-count').textContent=`${assets.length} monedas · ${positions.length} activas`;
   for (const asset of assets) {
-    const active=data.position?.asset===asset;
+    const pos=byAsset[asset],active=Boolean(pos);
     const row=tbody.insertRow();row.insertCell().textContent=asset;
     const status=row.insertCell(),pill=document.createElement('span');
     pill.className=`state-pill${active?' active':''}`;pill.textContent=active?'Activa':'Sin operación';status.append(pill);
-    row.insertCell().textContent=active?number(data.position.qty):'—';
+    row.insertCell().textContent=active?number(pos.qty):'—';
     const bar=data.last_bar?.[asset];row.insertCell().textContent=Number.isFinite(bar)?`${utc(bar)} UTC`:'Sin datos';
     row.insertCell().textContent=String(data.metrics?.trades_by_asset?.[asset]??0);
   }
@@ -148,11 +150,15 @@ function render(data) {
   $('return').textContent=pct(m.realised_return);$('return').className=`value ${m.realised_return>=0?'positive':'negative'}`;
   $('drawdown').textContent=pct(m.max_drawdown);$('trades-count').textContent=m.n;
   $('win-rate').textContent=`Tasa de acierto: ${pct(m.win_rate)}`;
-  $('position').textContent=data.position?`${data.position.asset} · ${data.position.strategy||'hermes_core'} · ${data.position.regime}`:'Sin posición';
-  $('entry-stop').textContent=data.position?`${number(data.position.entry)} / ${number(data.position.stop)}`:'—';
-  $('target').textContent=data.position?`${number(data.position.target)} USDT`:'—';
+  const positions=Array.isArray(data.positions)?data.positions:[];
+  $('position').textContent=positions.length?`${positions.length} / ${m.max_positions} · ${positions.map(p=>p.asset.replace('/USDT','')).join(', ')}`:'Sin posiciones';
+  $('entry-stop').textContent=positions.length?positions.map(p=>`${p.asset.replace('/USDT','')} ${number(p.entry)}/${number(p.stop)}`).join(' · '):'—';
+  $('target').textContent=positions.length?positions.map(p=>`${p.asset.replace('/USDT','')} ${number(p.target)}`).join(' · '):'—';
   $('cash').textContent=money(m.cash);$('risk').textContent=pct(data.risk.risk_per_trade);
-  $('exposure').textContent=pct(data.risk.max_exposure);$('pf').textContent=m.profit_factor===null?'—':number(m.profit_factor);
+  $('global-risk').textContent=`${pct(m.open_risk/data.initial_capital)} usado / ${pct(data.risk.max_portfolio_risk)} máx.`;
+  $('risk-usage').textContent=pct(m.risk_utilization);
+  $('exposure').textContent=`${pct(m.gross_exposure/Math.max(m.equity,0.000001))} usado / ${pct(data.risk.max_total_exposure)} máx.`;
+  $('pf').textContent=m.profit_factor===null?'—':number(m.profit_factor);
   $('updated').textContent=`Actualizado: ${utc(data.updated_at*1000)} UTC`;
   const opt=data.optimizer||{};
   $('optimizer-status').textContent=!opt.enabled?'Desactivado':opt.running?'Evaluando histórico':opt.active_change?'Cambio en observación':'Activo · esperando ciclo';

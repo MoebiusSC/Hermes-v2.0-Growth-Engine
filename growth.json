@@ -1,6 +1,13 @@
 {
   "capital": 50,
-  "assets": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "LINK/USDT", "SUI/USDT"],
+  "assets": [
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+    "LINK/USDT",
+    "SUI/USDT"
+  ],
   "risk_per_trade": 0.005,
   "max_exposure": 0.5,
   "daily_loss": 0.015,
@@ -9,5 +16,8 @@
   "min_order_usd": 5,
   "fee": 0.001,
   "slippage": 0.0002,
-  "spread": 0.0002
+  "spread": 0.0002,
+  "max_positions": 3,
+  "max_portfolio_risk": 0.015,
+  "max_total_exposure": 0.9
 }

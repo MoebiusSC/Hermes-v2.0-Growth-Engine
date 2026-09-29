@@ -1,0 +1,40 @@
+name: Multi Position Benchmark
+
+on:
+  push:
+    branches:
+      - feature/multi-position-risk-budget
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e .
+      - name: Build single-position control config
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data=json.loads(Path("growth.json").read_text())
+          data["max_positions"]=1
+          data["max_portfolio_risk"]=data["risk_per_trade"]
+          data["max_total_exposure"]=data["max_exposure"]
+          Path("growth.single.json").write_text(json.dumps(data,indent=2)+"\n")
+          PY
+      - name: Run 120-day single-position control
+        run: python -m hermes_trading.growth_run backtest --config growth.single.json --days 120 | tee single_position_120d.json
+      - name: Run 120-day multi-position benchmark
+        run: python -m hermes_trading.growth_run backtest --config growth.json --days 120 | tee multi_position_120d.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: multi-position-comparison-120d
+          path: |
+            single_position_120d.json
+            multi_position_120d.json

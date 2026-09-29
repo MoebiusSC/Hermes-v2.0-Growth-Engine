@@ -177,10 +177,21 @@ class SharedPaper:
         self.path, self.api = Path(path), api
 
     def load(self) -> dict:
-        return json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {
-            "account_id": None, "manual": {}, "auto_asset": None, "auto_qty": 0,
-            "cursor": None, "skipped_asset": None, "pending": None, "manual_sent": {},
+        state = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {
+            "account_id": None, "manual": {}, "auto": {}, "cursor": None,
+            "skipped_assets": [], "pending": None, "manual_sent": {},
             "halted_manual": None, "halted_auto": None, "last_order": None}
+        if "auto" not in state:
+            state["auto"] = {}
+            asset, qty = state.get("auto_asset"), float(state.get("auto_qty") or 0)
+            if asset and qty > 1e-9:
+                state["auto"][asset] = qty
+        if "skipped_assets" not in state:
+            state["skipped_assets"] = [state["skipped_asset"]] if state.get("skipped_asset") else []
+        state.pop("auto_asset", None)
+        state.pop("auto_qty", None)
+        state.pop("skipped_asset", None)
+        return state
 
     def save(self, state: dict) -> None:
         atomic_write(self.path, json.dumps(state, indent=2, allow_nan=False))
@@ -221,14 +232,16 @@ class SharedPaper:
                 held = owned(self.api.positions(), asset)
                 held_qty = float(held["qty"]) if held else 0.
                 if owner == "manual":
-                    if pending["side"] == "buy" and state["auto_asset"] == asset:
+                    if pending["side"] == "buy" and asset in state["auto"]:
                         state["halted_manual"] = state["halted_auto"] = "Posición superpuesta: revisar en Alpaca"
                     state["manual"][asset] = held_qty
                     if held_qty <= 1e-9:
                         state["manual"].pop(asset, None)
                 else:
-                    state["auto_asset"] = asset if held_qty > 1e-9 else None
-                    state["auto_qty"] = held_qty
+                    if held_qty > 1e-9:
+                        state["auto"][asset] = held_qty
+                    else:
+                        state["auto"].pop(asset, None)
                     state["cursor"] = pending["index"] + 1
                     state["last_order"] = order_view(order)
             state["pending"] = None
@@ -241,10 +254,10 @@ class SharedPaper:
         if self.api.orders():
             raise BrokerError("Hay una orden abierta en Alpaca; revisar antes de operar")
         expected = dict(state["manual"])
-        if state["auto_asset"]:
-            if state["auto_asset"] in expected:
+        for asset, qty in state["auto"].items():
+            if asset in expected:
                 raise BrokerError("El bot y la cartera manual comparten un activo; revisar en Alpaca")
-            expected[state["auto_asset"]] = state["auto_qty"]
+            expected[asset] = float(qty)
         actual = {display(p["symbol"]): float(p["qty"]) for p in positions if abs(float(p["qty"])) > 1e-9}
         if actual.keys() != expected.keys() or any(abs(actual[a] - q) > max(1e-8, q * 1e-7)
                                                      for a, q in expected.items()):
@@ -321,7 +334,7 @@ class PaperManual(SharedPaper):
                 raise BrokerError("Existe una orden pendiente de reconciliar")
             if s["halted_manual"]:
                 raise BrokerError(s["halted_manual"])
-            if s["auto_asset"] == asset:
+            if asset in s["auto"]:
                 raise BrokerError("Este activo pertenece al bot; elige otro o espera su salida")
             self.validate(s, self.api.positions())
             details = ensure_asset(self.api, asset, side)
@@ -354,9 +367,8 @@ class PaperAuto(SharedPaper):
         """Read-only broker and ownership gate for a larger automatic universe."""
         with _LOCK:
             s = self.load()
-            if (book.state["position"] or book.state["pending"] or s["pending"] or
-                    s["auto_asset"] or abs(float(s["auto_qty"])) > 1e-9 or
-                    s["halted_auto"] or s["cursor"] != len(book.state["events"])):
+            if (book.state["positions"] or book.state["pending"] or s["pending"] or
+                    s["auto"] or s["halted_auto"] or s["cursor"] != len(book.state["events"])):
                 return False
             self.account(s)
             self.validate(s, self.api.positions())
@@ -366,11 +378,11 @@ class PaperAuto(SharedPaper):
 
     def recover_transport_halt_if_flat(self, book) -> bool:
         """Clear only a stale transport warning after checking the paper broker."""
-        if book.state["position"] or book.state["pending"]:
+        if book.state["positions"] or book.state["pending"]:
             return False
         with _LOCK:
             s = self.load()
-            if s["pending"] or s["auto_asset"] or abs(float(s["auto_qty"])) > 1e-9:
+            if s["pending"] or s["auto"]:
                 return False
             if s["cursor"] is not None and s["cursor"] != len(book.state["events"]):
                 return False
@@ -401,13 +413,17 @@ class PaperAuto(SharedPaper):
             self.reconcile(s)
             positions = self.api.positions()
             self.validate(s, positions)
-            held = owned(positions, s["auto_asset"]) if s["auto_asset"] else None
+            auto_positions = []
+            for asset in sorted(s["auto"]):
+                held = owned(positions, asset)
+                if held:
+                    auto_positions.append({"asset": asset, "qty": float(held["qty"]),
+                                           "value": float(held["market_value"])})
             return {"ready": True, "cash": float(account["cash"]), "equity": float(account["equity"]),
                     "account_suffix": str(account.get("account_number", ""))[-4:],
-                    "positions": [{"asset": s["auto_asset"], "qty": float(held["qty"]),
-                                   "value": float(held["market_value"])}] if held else [],
-                    "cursor": s["cursor"], "pending": s["pending"], "halted": s["halted_auto"],
-                    "skipped_asset": s["skipped_asset"], "last_order": s["last_order"]}
+                    "positions": auto_positions, "cursor": s["cursor"], "pending": s["pending"],
+                    "halted": s["halted_auto"], "skipped_assets": list(s["skipped_assets"]),
+                    "last_order": s["last_order"]}
 
     def sync(self, book) -> None:
         with _LOCK:
@@ -424,8 +440,8 @@ class PaperAuto(SharedPaper):
                 self.save(s)
                 return
             if s["cursor"] is None:
-                if book.state["position"] or book.state["pending"]:
-                    return  # Start mirroring only when the research strategy is flat.
+                if book.state["positions"] or book.state["pending"]:
+                    return  # Never import pre-existing research positions into a fresh broker ledger.
                 s["cursor"] = len(book.state["events"])
                 self.save(s)
                 return
@@ -440,28 +456,32 @@ class PaperAuto(SharedPaper):
                 asset = event["asset"]
                 side = "buy" if event["event"] == "entry" else "sell"
                 if side == "buy":
-                    if s["auto_asset"] or not book.state["position"] or book.state["position"]["asset"] != asset:
+                    if asset not in book.state["positions"] or asset in s["auto"]:
                         s["halted_auto"] = "strategy_position_mismatch"
                         break
                     if asset in s["manual"]:
-                        s["skipped_asset"] = asset
+                        if asset not in s["skipped_assets"]:
+                            s["skipped_assets"].append(asset)
                         continue  # Never net the bot and manual units in the same broker symbol.
                     ensure_asset(self.api, asset, side)
+                    account = self.account(s)
                     notional = min(float(event["notional"]), float(account["cash"]) * .98,
                                    float(account["equity"]) * book.cfg.max_exposure)
                     if notional < CRYPTO_MIN:
                         s["halted_auto"] = "alpaca_min_order_10_usd"
                         break
                     size = {"notional": amount_string(notional, 2)}
-                elif s["skipped_asset"] == asset:
-                    s["skipped_asset"] = None
+                elif asset in s["skipped_assets"]:
+                    s["skipped_assets"].remove(asset)
                     continue
                 else:
-                    if s["auto_asset"] != asset:
+                    if asset not in s["auto"]:
                         s["halted_auto"] = "paper_position_missing"
                         break
+                    positions = self.api.positions()
                     held = owned(positions, asset)
-                    if not held or abs(float(held["qty"]) - s["auto_qty"]) > 1e-8:
+                    expected_qty = float(s["auto"][asset])
+                    if not held or abs(float(held["qty"]) - expected_qty) > 1e-8:
                         s["halted_auto"] = "paper_position_mismatch"
                         break
                     size = {"qty": quantity_string(float(held["qty"]), self.api.asset(asset))}
@@ -475,5 +495,8 @@ class PaperAuto(SharedPaper):
                 if order.get("client_order_id") != client_id:
                     raise BrokerError("Respuesta inesperada; reconcilia en Alpaca")
                 self.reconcile(s)
-                return
+                if s["pending"]:
+                    return
+                positions = self.api.positions()
+                self.validate(s, positions)
             self.save(s)

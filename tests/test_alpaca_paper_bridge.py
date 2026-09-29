@@ -141,12 +141,12 @@ class PaperBridgeTests(unittest.TestCase):
             mirror.sync(book)
             self.assertEqual(mirror.load()["cursor"],0)
             now=int(time.time()*1000)
-            book.state["position"]={"asset":"BTC/USDT"}
+            book.state["positions"]={"BTC/USDT":{"asset":"BTC/USDT"}}
             book.state["events"].append({"ts":now,"event":"entry","asset":"BTC/USDT","notional":12})
             mirror.sync(book)
             self.assertEqual(api.posts,1)
             self.assertEqual(mirror.load()["cursor"],1)
-            book.state["position"]=None
+            book.state["positions"]={}
             book.state["events"].append({"ts":now,"event":"exit","asset":"BTC/USDT"})
             mirror.sync(book)
             self.assertEqual(api.posts,2)
@@ -180,7 +180,7 @@ class PaperBridgeTests(unittest.TestCase):
     def test_auto_does_not_import_existing_strategy_position(self):
         api=FakeAPI("paper")
         book=Portfolio(GrowthConfig())
-        book.state["position"]={"asset":"BTC/USDT"}
+        book.state["positions"]={"BTC/USDT":{"asset":"BTC/USDT"}}
         with tempfile.TemporaryDirectory() as folder:
             mirror=PaperAuto(Path(folder)/"shared.json",api)
             mirror.sync(book)
@@ -201,7 +201,7 @@ class PaperBridgeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             mirror=PaperAuto(Path(folder)/"shared.json",api)
             mirror.sync(book)
-            book.state["position"]={"asset":"BTC/USDT"}
+            book.state["positions"]={"BTC/USDT":{"asset":"BTC/USDT"}}
             book.state["events"].append({"ts":int(time.time()*1000)-180_000,
                                           "event":"entry","asset":"BTC/USDT","notional":12})
             mirror.sync(book)
@@ -247,7 +247,7 @@ class PaperBridgeTests(unittest.TestCase):
             manual.order({"id":"manual0001","asset":"SPY","side":"buy","amount":10})
             mirror.sync(book)
             now=int(time.time()*1000)
-            book.state["position"]={"asset":"BTC/USDT"}
+            book.state["positions"]={"BTC/USDT":{"asset":"BTC/USDT"}}
             book.state["events"].append({"ts":now,"event":"entry","asset":"BTC/USDT","notional":12})
             mirror.sync(book)
             self.assertEqual(api.posts,2)
@@ -256,7 +256,7 @@ class PaperBridgeTests(unittest.TestCase):
             self.assertEqual(mirror.state()["positions"][0]["asset"],"BTC/USDT")
             with self.assertRaisesRegex(BrokerError,"pertenece al bot"):
                 manual.order({"id":"manual0002","asset":"BTC/USDT","side":"sell","amount":.12})
-            book.state["position"]=None
+            book.state["positions"]={}
             book.state["events"].append({"ts":now,"event":"exit","asset":"BTC/USDT"})
             mirror.sync(book)
             self.assertIn("SPY",api.holdings)
@@ -271,17 +271,37 @@ class PaperBridgeTests(unittest.TestCase):
             manual.order({"id":"manual0001","asset":"BTC/USDT","side":"buy","amount":10})
             mirror.sync(book)
             now=int(time.time()*1000)
-            book.state["position"]={"asset":"BTC/USDT"}
+            book.state["positions"]={"BTC/USDT":{"asset":"BTC/USDT"}}
             book.state["events"].append({"ts":now,"event":"entry","asset":"BTC/USDT","notional":12})
             mirror.sync(book)
             self.assertEqual(api.posts,1)
-            self.assertEqual(mirror.state()["skipped_asset"],"BTC/USDT")
-            book.state["position"]=None
+            self.assertEqual(mirror.state()["skipped_assets"],["BTC/USDT"])
+            book.state["positions"]={}
             book.state["events"].append({"ts":now,"event":"exit","asset":"BTC/USDT"})
             mirror.sync(book)
             self.assertEqual(api.posts,1)
-            self.assertIsNone(mirror.state()["skipped_asset"])
+            self.assertFalse(mirror.state()["skipped_assets"])
 
+    def test_auto_mirrors_multiple_strategy_positions_without_netting_assets(self):
+        api=FakeAPI("paper")
+        book=Portfolio(GrowthConfig())
+        with tempfile.TemporaryDirectory() as folder:
+            mirror=PaperAuto(Path(folder)/"shared.json",api)
+            mirror.sync(book)
+            now=int(time.time()*1000)
+            book.state["positions"]={
+                "BTC/USDT":{"asset":"BTC/USDT"},
+                "ETH/USDT":{"asset":"ETH/USDT"},
+            }
+            book.state["events"].extend([
+                {"ts":now,"event":"entry","asset":"BTC/USDT","notional":12},
+                {"ts":now,"event":"entry","asset":"ETH/USDT","notional":12},
+            ])
+            mirror.sync(book)
+            state=mirror.state()
+            self.assertEqual(api.posts,2)
+            self.assertEqual({p["asset"] for p in state["positions"]},{"BTC/USDT","ETH/USDT"})
+            self.assertEqual(set(mirror.load()["auto"]),{"BTC/USDT","ETH/USDT"})
     def test_external_position_change_blocks_new_orders(self):
         api=FakeAPI("paper")
         with tempfile.TemporaryDirectory() as folder:

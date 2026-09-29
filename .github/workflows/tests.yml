@@ -18,4 +18,5 @@ jobs:
       - run: pip install pyflakes
       # undefined names (a missing import) fail here instead of in production
       - run: python -m pyflakes hermes_trading tests
+      - run: node --check hermes_trading/growth_dashboard.js
       - run: python -m unittest discover -s tests -p "test_*.py" -v

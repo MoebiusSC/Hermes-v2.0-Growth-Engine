@@ -53,7 +53,7 @@ def report(book: Portfolio) -> dict:
             "halted": s["halted"], "trades_by_asset": {a: sum(t["asset"] == a for t in trades)
                                                       for a in book.cfg.assets},
             "trades_by_strategy": {name: row["trades"] for name, row in by_strategy.items()},
-            "strategy_metrics": by_strategy}
+            "strategy_metrics": by_strategy, **book.risk_snapshot()}
 
 
 def _load_config(path: Path) -> GrowthConfig:
@@ -75,6 +75,9 @@ def _restore(cfg: GrowthConfig, state_path: Path) -> Portfolio:
     saved = json.loads(state_path.read_text(encoding="utf-8"))
     baseline = saved.get("baseline_config", saved["config"])
     desired = json.loads(json.dumps(dataclasses.asdict(cfg)))
+    for field in ("max_positions", "max_portfolio_risk", "max_total_exposure"):
+        baseline.setdefault(field, desired[field])
+        saved["config"].setdefault(field, desired[field])
     old_assets = list(baseline.get("assets", []))
     new_assets = list(desired.get("assets", []))
     expanding = (new_assets[:len(old_assets)] == old_assets and len(new_assets) > len(old_assets) and
@@ -84,8 +87,9 @@ def _restore(cfg: GrowthConfig, state_path: Path) -> Portfolio:
         raise RuntimeError("baseline config changed while account has state; review/migrate explicitly")
     active = GrowthConfig(**{**saved["config"], "assets": tuple(saved["config"]["assets"])})
     if active.assets != tuple(baseline["assets"]) or any(getattr(active, field) != getattr(cfg, field) for field in
-           ("capital", "risk_per_trade", "max_exposure", "daily_loss", "weekly_loss",
-            "monthly_drawdown", "min_order_usd", "fee", "slippage", "spread")):
+           ("capital", "risk_per_trade", "max_exposure", "max_positions", "max_portfolio_risk",
+            "max_total_exposure", "daily_loss", "weekly_loss", "monthly_drawdown",
+            "min_order_usd", "fee", "slippage", "spread")):
         raise RuntimeError("saved risk or cost config differs from baseline")
     return Portfolio(active, saved["state"])
 
@@ -96,7 +100,7 @@ async def _expand_universe(book: Portfolio, desired: GrowthConfig, state_path: P
     if book.cfg.assets == desired.assets:
         return False
     added = tuple(a for a in desired.assets if a not in book.cfg.assets)
-    if (book.cfg.assets + added != desired.assets or book.state["position"] or
+    if (book.cfg.assets + added != desired.assets or book.state["positions"] or
             book.state["pending"] or book.state["halted"] or
             (book.state.get("optimizer", {}).get("active_change") or
              book.state.get("optimizer", {}).get("running"))):
@@ -136,7 +140,7 @@ async def _expand_universe(book: Portfolio, desired: GrowthConfig, state_path: P
 
 def _recent_market_data_complete(book: Portfolio, feeds: dict, now_ms: int) -> bool:
     """Require three hours of synchronized, complete closed candles before recovery."""
-    if book.state["halted"] != "market_data_gap" or book.state["position"] or book.state["pending"]:
+    if book.state["halted"] != "market_data_gap" or book.state["positions"] or book.state["pending"]:
         return False
     newest = []
     for asset in book.cfg.assets:
@@ -204,7 +208,7 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
             task = None
             meta["candidate_index"] += 1
             meta["next_due_ms"] = now_ms + (optimizer.INTERVAL_MS if result["accepted"] else optimizer.RETRY_MS)
-            if result["accepted"] and not (book.state["position"] or book.state["pending"] or book.state["halted"]):
+            if result["accepted"] and not (book.state["positions"] or book.state["pending"] or book.state["halted"]):
                 trial, _ = optimizer.candidate_config(book.cfg, meta["candidate_index"] - 1)
                 meta["active_change"] = {"previous_config": dataclasses.asdict(book.cfg),
                                          "change": result["change"], "applied_ms": now_ms,
@@ -223,7 +227,7 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                               "change": result.get("change")}), flush=True)
         if (task is None and meta.get("active_change") is None and
                 now_ms >= meta["next_due_ms"] and
-                not (book.state["position"] or book.state["pending"] or book.state["halted"])):
+                not (book.state["positions"] or book.state["pending"] or book.state["halted"])):
             task = asyncio.create_task(asyncio.to_thread(optimizer.evaluate, book.cfg,
                                                          meta["candidate_index"]))
             meta["running"] = True
@@ -257,7 +261,10 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                     latest = max(bars["t"][-1] for bars, _, _ in feeds.values())
                     for ts in range(min(book.state["last_bar"].values()) + BAR_MS, latest + 1, BAR_MS):
                         signals = []
-                        for asset, (bars, hours, _) in feeds.items():
+                        pending_order = book.pending_assets()
+                        ordered_assets = pending_order + [a for a in book.cfg.assets if a not in pending_order]
+                        for asset in ordered_assets:
+                            bars, hours, _ = feeds[asset]
                             if ts <= book.state["last_bar"].get(asset, -1):
                                 continue
                             try:
@@ -276,15 +283,17 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                             signals.extend(signals_for_asset(asset, sub, hours, book.cfg))
                         book.decide(signals, ts + BAR_MS)
                         if ts == latest and book.state["pending"]:
-                            chosen = book.state["pending"]["asset"]
-                            raw = feeds[chosen][2]
-                            # A forming next bar supplies the current observed quote. If missing or
-                            # late, skip the signal rather than assume a historical open fill.
-                            if raw["t"][-1] == ts + BAR_MS:
-                                book.paper_fill_pending(float(raw["close"][-1]), int(time.time() * 1000))
-                            else:
-                                book.state["pending"] = None
-                                book.state["halted"] = "missing_current_quote"
+                            # A forming next bar supplies a fresh quote for every queued asset.
+                            # Fill in global signal rank order so the risk budget is deterministic.
+                            for chosen in list(book.pending_assets()):
+                                raw = feeds[chosen][2]
+                                if raw["t"][-1] == ts + BAR_MS:
+                                    book.paper_fill_pending(chosen, float(raw["close"][-1]),
+                                                            int(time.time() * 1000))
+                                else:
+                                    book.state["pending"] = {}
+                                    book.state["halted"] = "missing_current_quote"
+                                    break
                 if await _recover_market_gap(book, feeds, int(now), mirror):
                     print(json.dumps({"event": "market_data_gap_recovered",
                                       "latest_closed_bar": book.state["events"][-1]["latest_closed_bar"],
