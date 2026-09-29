@@ -88,7 +88,7 @@ function drawCurve(points) {
 function renderAssets(data) {
   const tbody=$('asset-rows');tbody.replaceChildren();
   const assets=Array.isArray(data.assets)?data.assets:[];
-  const positions=Array.isArray(data.positions)?data.positions:[];
+  const positions=(Array.isArray(data.positions)?data.positions:[]).filter(p=>p&&typeof p.asset==='string');
   const byAsset=Object.fromEntries(positions.map(p=>[p.asset,p]));
   $('asset-count').textContent=`${assets.length} monedas · ${positions.length} activas`;
   for (const asset of assets) {
@@ -120,9 +120,11 @@ function renderStrategies(data) {
 
 function renderRows(data) {
   const tbody=$('trade-rows');tbody.replaceChildren();
-  if (!data.trades.length) {
+  const trades=Array.isArray(data.trades)?data.trades:[];
+  const eventRows=Array.isArray(data.events)?data.events:[];
+  if (!trades.length) {
     const row=tbody.insertRow(),cell=row.insertCell();cell.colSpan=6;cell.className='empty';cell.textContent='Aún no hay operaciones cerradas';
-  } else for (const trade of data.trades.slice(0,12)) {
+  } else for (const trade of trades.slice(0,12)) {
     const row=tbody.insertRow();
     for (const value of [utc(trade.closed_ms),trade.asset,trade.strategy||'hermes_core',trade.regime,trade.reason,`${trade.pnl>=0?'+':''}${Number(trade.pnl).toFixed(4)} USDT`]) {
       const cell=row.insertCell();cell.textContent=value;
@@ -130,8 +132,8 @@ function renderRows(data) {
     }
   }
   const events=$('events');events.replaceChildren();
-  if (!data.events.length) {const p=document.createElement('p');p.className='empty';p.textContent='Sin eventos todavía';events.append(p);return;}
-  for (const event of data.events.slice(0,7)) {
+  if (!eventRows.length) {const p=document.createElement('p');p.className='empty';p.textContent='Sin eventos todavía';events.append(p);return;}
+  for (const event of eventRows.slice(0,7)) {
     const row=document.createElement('div');row.className='row';
     const label=document.createElement('span');label.textContent=`${utc(event.ts)} · ${event.event}`;
     const value=document.createElement('strong');value.textContent=event.reason||event.asset||event.error||'—';
@@ -140,8 +142,8 @@ function renderRows(data) {
 }
 
 function render(data) {
-  if (!data.ready) { $('status').textContent=data.message||'Esperando datos';$('status-dot').className='dot warn';return; }
-  const m=data.metrics, age=Date.now()-data.updated_at*1000, halted=m.halted;
+  if (!data||!data.ready) { $('status').textContent=data?.message||'Esperando datos';$('status-dot').className='dot warn';return; }
+  const m=data.metrics||{}, age=Date.now()-Number(data.updated_at||0)*1000, halted=m.halted;
   $('status').textContent=halted?`Pausado: ${halted}`:age>300000?'Datos sin actualizar':'Paper en observación';
   $('status-dot').className=halted?'dot bad':age>300000?'dot warn':'dot';
   const banner=$('banner');banner.style.display=halted?'block':'none';
@@ -150,14 +152,17 @@ function render(data) {
   $('return').textContent=pct(m.realised_return);$('return').className=`value ${m.realised_return>=0?'positive':'negative'}`;
   $('drawdown').textContent=pct(m.max_drawdown);$('trades-count').textContent=m.n;
   $('win-rate').textContent=`Tasa de acierto: ${pct(m.win_rate)}`;
-  const positions=Array.isArray(data.positions)?data.positions:[];
-  $('position').textContent=positions.length?`${positions.length} / ${m.max_positions} · ${positions.map(p=>p.asset.replace('/USDT','')).join(', ')}`:'Sin posiciones';
+  const rawPositions=Array.isArray(data.positions)?data.positions:(data.position?[data.position]:[]);
+  const positions=rawPositions.filter(p=>p&&typeof p.asset==='string');
+  const maxPositions=Number(m.max_positions??data.risk?.max_positions??0);
+  $('position').textContent=positions.length?`${positions.length} / ${maxPositions||'—'} · ${positions.map(p=>p.asset.replace('/USDT','')).join(', ')}`:'Sin posiciones';
   $('entry-stop').textContent=positions.length?positions.map(p=>`${p.asset.replace('/USDT','')} ${number(p.entry)}/${number(p.stop)}`).join(' · '):'—';
   $('target').textContent=positions.length?positions.map(p=>`${p.asset.replace('/USDT','')} ${number(p.target)}`).join(' · '):'—';
-  $('cash').textContent=money(m.cash);$('risk').textContent=pct(data.risk.risk_per_trade);
-  $('global-risk').textContent=`${pct(m.open_risk/data.initial_capital)} usado / ${pct(data.risk.max_portfolio_risk)} máx.`;
+  const risk=data.risk||{}, initial=Math.max(Number(data.initial_capital)||0,0.000001), equity=Math.max(Number(m.equity)||0,0.000001);
+  $('cash').textContent=money(m.cash);$('risk').textContent=pct(risk.risk_per_trade);
+  $('global-risk').textContent=`${pct((Number(m.open_risk)||0)/initial)} usado / ${pct(risk.max_portfolio_risk)} máx.`;
   $('risk-usage').textContent=pct(m.risk_utilization);
-  $('exposure').textContent=`${pct(m.gross_exposure/Math.max(m.equity,0.000001))} usado / ${pct(data.risk.max_total_exposure)} máx.`;
+  $('exposure').textContent=`${pct((Number(m.gross_exposure)||0)/equity)} usado / ${pct(risk.max_total_exposure)} máx.`;
   $('pf').textContent=m.profit_factor===null?'—':number(m.profit_factor);
   $('updated').textContent=`Actualizado: ${utc(data.updated_at*1000)} UTC`;
   const opt=data.optimizer||{};
@@ -165,17 +170,40 @@ function render(data) {
   $('optimizer-next').textContent=opt.next_due_ms?`${utc(opt.next_due_ms)} UTC`:'—';
   $('optimizer-last').textContent=opt.last_decision?`${opt.last_decision.event||'evaluación'} · ${opt.last_decision.reason||opt.last_decision.change?.field||'—'}`:'Aún sin evaluación';
   $('optimizer-alpha').textContent=data.alpha?`RSI rango ${data.alpha.range_rsi} · RSI tendencia ${data.alpha.trend_rsi} · objetivo ${data.alpha.target_r}R · stop ${data.alpha.stop_atr} ATR`:'—';
-  currentV2=data;renderComparison();
-  drawCurve(data.curve);renderAssets(data);renderStrategies(data);renderRows(data);
+  currentV2=data;
+  const sections=[
+    ['comparación',()=>renderComparison()],
+    ['curva',()=>drawCurve(Array.isArray(data.curve)?data.curve:[])],
+    ['activos',()=>renderAssets(data)],
+    ['estrategias',()=>renderStrategies(data)],
+    ['historial',()=>renderRows(data)],
+  ];
+  const failures=[];
+  for (const [name,fn] of sections) {
+    try { fn(); } catch (error) { failures.push(`${name}: ${error?.message||error}`); console.error(error); }
+  }
+  if (failures.length) {
+    banner.style.display='block';
+    banner.textContent=`Estado conectado, pero hubo un error visual: ${failures.join(' · ')}`;
+  }
 }
 
 async function refresh() {
+  let data;
   try {
     const response=await fetch('/api/state',{cache:'no-store'});
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    render(await response.json());
+    data=await response.json();
   } catch (error) {
-    $('status').textContent='Sin conexión al estado';$('status-dot').className='dot bad';
+    $('status').textContent=`Sin conexión al estado: ${error?.message||error}`;$('status-dot').className='dot bad';
+    return;
+  }
+  try {
+    render(data);
+  } catch (error) {
+    console.error(error);
+    $('status').textContent='Estado conectado · error de visualización';$('status-dot').className='dot warn';
+    const banner=$('banner');banner.style.display='block';banner.textContent=`Error de visualización: ${error?.message||error}`;
   }
 }
 refresh();setInterval(refresh,30000);
@@ -323,7 +351,7 @@ async function loadAutoPaper() {
     const response=await fetch('/api/alpaca/auto/state',{cache:'no-store'}),data=await response.json();
     if (!response.ok) throw new Error(data.error||`HTTP ${response.status}`);
     $('alpaca-auto-status').textContent=data.ready?(data.halted?`Detenido: ${data.halted}`:
-      data.pending?'Orden pendiente':data.skipped_asset?`Omitiendo ${data.skipped_asset} manual`:
+      data.pending?'Orden pendiente':Array.isArray(data.skipped_assets)&&data.skipped_assets.length?`Omitiendo ${data.skipped_assets.join(', ')} manual`:
       data.cursor===null?'Esperando cartera interna sin posición':`Conectado · cuenta ••••${data.account_suffix}`):data.message;
     $('alpaca-auto-balance').textContent=data.ready?`${manualMoney(data.equity)} / ${manualMoney(data.cash)}`:'—';
     $('alpaca-auto-positions').textContent=data.ready?(data.positions.map(p=>`${p.asset} ${manualUnits(p.qty)}`).join(', ')||'Sin posiciones'):'—';
