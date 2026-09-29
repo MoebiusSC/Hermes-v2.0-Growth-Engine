@@ -93,6 +93,11 @@
     <p class="note">Una sola posición del motor puede estar abierta a la vez. «Sin operación» indica que el bot no mantiene una posición en esa moneda; no indica una orden de compra.</p>
     <div class="table-wrap"><table><thead><tr><th>Moneda</th><th>Operación activa</th><th>Unidades abiertas</th><th>Última vela (inicio UTC)</th><th>Operaciones cerradas</th></tr></thead><tbody id="asset-rows"></tbody></table></div>
   </section>
+  <section class="card" style="margin-bottom:13px" aria-label="Comparación de estrategias automáticas">
+    <div class="card-head"><div><div class="label" style="margin-bottom:6px">Atribución de rendimiento</div><h3>Hermes Core vs. réplica SUI</h3></div><span class="small">Misma cuenta · P/L realizado</span></div>
+    <p class="note">El retorno y drawdown de cada fila atribuyen únicamente las operaciones cerradas por esa estrategia, usando el capital inicial como base. Sirve para medir qué señal está aportando valor sin confundirla con mayor apalancamiento.</p>
+    <div class="table-wrap"><table><thead><tr><th>Estrategia</th><th>Trades</th><th>P/L</th><th>Retorno</th><th>Win rate</th><th>Profit factor</th><th>DD atribuido</th></tr></thead><tbody id="strategy-rows"></tbody></table></div>
+  </section>
   <section class="grid"><div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Historial</div><h3>Operaciones recientes</h3></div></div>
     <div class="table-wrap"><table><thead><tr><th>Fecha UTC</th><th>Activo</th><th>Estrategia</th><th>Régimen</th><th>Salida</th><th>Resultado</th></tr></thead><tbody id="trade-rows"></tbody></table></div></div>
     <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Monitoreo</div><h3>Últimos eventos</h3></div></div><div id="events"></div></div></section>
