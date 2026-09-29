@@ -103,12 +103,12 @@ function renderAssets(data) {
 function renderRows(data) {
   const tbody=$('trade-rows');tbody.replaceChildren();
   if (!data.trades.length) {
-    const row=tbody.insertRow(),cell=row.insertCell();cell.colSpan=5;cell.className='empty';cell.textContent='Aún no hay operaciones cerradas';
+    const row=tbody.insertRow(),cell=row.insertCell();cell.colSpan=6;cell.className='empty';cell.textContent='Aún no hay operaciones cerradas';
   } else for (const trade of data.trades.slice(0,12)) {
     const row=tbody.insertRow();
-    for (const value of [utc(trade.closed_ms),trade.asset,trade.regime,trade.reason,`${trade.pnl>=0?'+':''}${Number(trade.pnl).toFixed(4)} USDT`]) {
+    for (const value of [utc(trade.closed_ms),trade.asset,trade.strategy||'hermes_core',trade.regime,trade.reason,`${trade.pnl>=0?'+':''}${Number(trade.pnl).toFixed(4)} USDT`]) {
       const cell=row.insertCell();cell.textContent=value;
-      if (cell.cellIndex===4) cell.className=trade.pnl>=0?'positive':'negative';
+      if (cell.cellIndex===5) cell.className=trade.pnl>=0?'positive':'negative';
     }
   }
   const events=$('events');events.replaceChildren();
@@ -132,7 +132,7 @@ function render(data) {
   $('return').textContent=pct(m.realised_return);$('return').className=`value ${m.realised_return>=0?'positive':'negative'}`;
   $('drawdown').textContent=pct(m.max_drawdown);$('trades-count').textContent=m.n;
   $('win-rate').textContent=`Tasa de acierto: ${pct(m.win_rate)}`;
-  $('position').textContent=data.position?`${data.position.asset} · ${data.position.regime}`:'Sin posición';
+  $('position').textContent=data.position?`${data.position.asset} · ${data.position.strategy||'hermes_core'} · ${data.position.regime}`:'Sin posición';
   $('entry-stop').textContent=data.position?`${number(data.position.entry)} / ${number(data.position.stop)}`:'—';
   $('target').textContent=data.position?`${number(data.position.target)} USDT`:'—';
   $('cash').textContent=money(m.cash);$('risk').textContent=pct(data.risk.risk_per_trade);
