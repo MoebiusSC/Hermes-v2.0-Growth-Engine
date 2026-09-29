@@ -10,7 +10,7 @@ import os
 import time
 from pathlib import Path
 
-from .growth import BAR_MS, GrowthConfig, Portfolio, candidate, replay
+from .growth import BAR_MS, GrowthConfig, Portfolio, replay, signals_for_asset
 from .score import metrics
 from .storage import atomic_write
 from .strategy import closed
@@ -25,7 +25,9 @@ def report(book: Portfolio) -> dict:
     return {**m, "equity": round(book.equity(), 4), "cash": round(s["cash"], 4),
             "profit_factor": round(wins / losses, 3) if losses else None,
             "halted": s["halted"], "trades_by_asset": {a: sum(t["asset"] == a for t in trades)
-                                                      for a in book.cfg.assets}}
+                                                      for a in book.cfg.assets},
+            "trades_by_strategy": {name: sum(t.get("strategy", "hermes_core") == name for t in trades)
+                                   for name in sorted({t.get("strategy", "hermes_core") for t in trades})}}
 
 
 def _load_config(path: Path) -> GrowthConfig:
@@ -47,9 +49,9 @@ def _restore(cfg: GrowthConfig, state_path: Path) -> Portfolio:
     saved = json.loads(state_path.read_text(encoding="utf-8"))
     baseline = saved.get("baseline_config", saved["config"])
     desired = json.loads(json.dumps(dataclasses.asdict(cfg)))
-    legacy = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
-    expanding = (baseline["assets"] == legacy and
-                 desired["assets"] == legacy + ["XRP/USDT", "LINK/USDT"] and
+    old_assets = list(baseline.get("assets", []))
+    new_assets = list(desired.get("assets", []))
+    expanding = (new_assets[:len(old_assets)] == old_assets and len(new_assets) > len(old_assets) and
                  {k: v for k, v in baseline.items() if k != "assets"} ==
                  {k: v for k, v in desired.items() if k != "assets"})
     if baseline != desired and not expanding:
@@ -245,9 +247,7 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                             bar = {k: bars[k][i] for k in ("open", "high", "low", "close")}
                             book.on_bar(asset, bar, ts)
                             sub = {k: bars[k][max(0, i - 160):i + 1] for k in ("t", "open", "high", "low", "close")}
-                            signal = candidate(asset, sub, hours, book.cfg)
-                            if signal:
-                                signals.append(signal)
+                            signals.extend(signals_for_asset(asset, sub, hours, book.cfg))
                         book.decide(signals, ts + BAR_MS)
                         if ts == latest and book.state["pending"]:
                             chosen = book.state["pending"]["asset"]
