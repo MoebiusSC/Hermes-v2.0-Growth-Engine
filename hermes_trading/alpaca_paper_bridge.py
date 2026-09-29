@@ -350,6 +350,20 @@ class PaperManual(SharedPaper):
 
 
 class PaperAuto(SharedPaper):
+    def can_expand_assets(self, book, new_assets: tuple[str, ...]) -> bool:
+        """Read-only broker and ownership gate for a larger automatic universe."""
+        with _LOCK:
+            s = self.load()
+            if (book.state["position"] or book.state["pending"] or s["pending"] or
+                    s["auto_asset"] or abs(float(s["auto_qty"])) > 1e-9 or
+                    s["halted_auto"] or s["cursor"] != len(book.state["events"])):
+                return False
+            self.account(s)
+            self.validate(s, self.api.positions())
+            for asset in new_assets:
+                ensure_asset(self.api, asset, "buy")
+            return True
+
     def recover_transport_halt_if_flat(self, book) -> bool:
         """Clear only a stale transport warning after checking the paper broker."""
         if book.state["position"] or book.state["pending"]:

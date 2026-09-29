@@ -1,6 +1,6 @@
 {
   "capital": 50,
-  "assets": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+  "assets": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "LINK/USDT"],
   "risk_per_trade": 0.005,
   "max_exposure": 0.5,
   "daily_loss": 0.015,

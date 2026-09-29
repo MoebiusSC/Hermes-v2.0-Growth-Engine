@@ -67,6 +67,21 @@ class FakeAPI:
 
 
 class PaperBridgeTests(unittest.TestCase):
+    def test_expansion_requires_both_paper_assets_and_flat_ledgers(self):
+        api = FakeAPI("paper")
+        book = Portfolio(GrowthConfig())
+        with tempfile.TemporaryDirectory() as folder:
+            mirror = PaperAuto(Path(folder) / "shared.json", api)
+            mirror.sync(book)
+            api.unavailable.add("XRP/USDT")
+            with self.assertRaisesRegex(BrokerError, "no negociable"):
+                mirror.can_expand_assets(book, ("XRP/USDT", "LINK/USDT"))
+            api.unavailable.clear()
+            self.assertTrue(mirror.can_expand_assets(book, ("XRP/USDT", "LINK/USDT")))
+            book.state["events"].append({"event": "optimizer_rejected"})
+            self.assertFalse(mirror.can_expand_assets(book, ("XRP/USDT", "LINK/USDT")))
+            self.assertEqual(api.posts, 0)
+
     def test_client_is_pinned_to_paper_api_and_encodes_crypto_symbol(self):
         seen=[]
         def reply(request):

@@ -21,7 +21,7 @@ HOUR_MS = 60 * 60_000
 @dataclasses.dataclass(frozen=True)
 class GrowthConfig:
     capital: float = 50.0
-    assets: tuple[str, ...] = ("BTC/USDT", "ETH/USDT", "SOL/USDT")
+    assets: tuple[str, ...] = ("BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "LINK/USDT")
     risk_per_trade: float = 0.005
     max_exposure: float = 0.50
     daily_loss: float = 0.015

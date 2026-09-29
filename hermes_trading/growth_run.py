@@ -45,14 +45,65 @@ def _restore(cfg: GrowthConfig, state_path: Path) -> Portfolio:
     if not state_path.exists():
         return Portfolio(cfg)
     saved = json.loads(state_path.read_text(encoding="utf-8"))
-    if saved.get("baseline_config", saved["config"]) != json.loads(json.dumps(dataclasses.asdict(cfg))):
+    baseline = saved.get("baseline_config", saved["config"])
+    desired = json.loads(json.dumps(dataclasses.asdict(cfg)))
+    legacy = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+    expanding = (baseline["assets"] == legacy and
+                 desired["assets"] == legacy + ["XRP/USDT", "LINK/USDT"] and
+                 {k: v for k, v in baseline.items() if k != "assets"} ==
+                 {k: v for k, v in desired.items() if k != "assets"})
+    if baseline != desired and not expanding:
         raise RuntimeError("baseline config changed while account has state; review/migrate explicitly")
     active = GrowthConfig(**{**saved["config"], "assets": tuple(saved["config"]["assets"])})
-    if any(getattr(active, field) != getattr(cfg, field) for field in
-           ("capital", "assets", "risk_per_trade", "max_exposure", "daily_loss", "weekly_loss",
+    if active.assets != tuple(baseline["assets"]) or any(getattr(active, field) != getattr(cfg, field) for field in
+           ("capital", "risk_per_trade", "max_exposure", "daily_loss", "weekly_loss",
             "monthly_drawdown", "min_order_usd", "fee", "slippage", "spread")):
         raise RuntimeError("saved risk or cost config differs from baseline")
     return Portfolio(active, saved["state"])
+
+
+async def _expand_universe(book: Portfolio, desired: GrowthConfig, state_path: Path,
+                           mirror, now_ms: int) -> bool:
+    """Start observing newly added assets at the current close; preserve every old ledger."""
+    if book.cfg.assets == desired.assets:
+        return False
+    added = tuple(a for a in desired.assets if a not in book.cfg.assets)
+    if (book.cfg.assets + added != desired.assets or book.state["position"] or
+            book.state["pending"] or book.state["halted"] or
+            (book.state.get("optimizer", {}).get("active_change") or
+             book.state.get("optimizer", {}).get("running"))):
+        return False
+    from .adapters import price
+    from .strategy import closed
+    feeds = {}
+    try:
+        for asset in added:
+            bars = closed(await price.ohlcv(asset, "15m", 250, fresh=True), "15m", now_ms)
+            hours = closed(await price.ohlcv(asset, "1h", 250, fresh=True), "1h", now_ms)
+            times = bars["t"][-12:]
+            if (len(bars["t"]) < 120 or len(hours["t"]) < 108 or
+                    len(times) != 12 or any(b - a != BAR_MS for a, b in zip(times, times[1:])) or
+                    not BAR_MS <= now_ms - times[-1] < 2 * BAR_MS or
+                    now_ms - hours["t"][-1] > 2 * 60 * 60_000 or
+                    book.state["last_bar"] and times[-1] !=
+                    max(book.state["last_bar"].values())):
+                return False
+            feeds[asset] = bars
+        if mirror and not await asyncio.to_thread(mirror.can_expand_assets, book, added):
+            return False
+    except Exception as exc:
+        print(f"asset expansion deferred: {type(exc).__name__}: {exc}", flush=True)
+        return False
+    for asset, bars in feeds.items():
+        book.state["last_bar"][asset] = bars["t"][-1]
+        book.state["marks"][asset] = bars["close"][-1]
+    book.cfg = dataclasses.replace(book.cfg, assets=desired.assets)
+    meta = book.state.get("optimizer", {})
+    meta["next_due_ms"] = now_ms + 60 * 60_000
+    book.state["events"].append({"ts": now_ms, "event": "asset_universe_expanded",
+                                 "added": list(added), "broker_checked": bool(mirror)})
+    _save(book, state_path, desired)
+    return True
 
 
 def _recent_market_data_complete(book: Portfolio, feeds: dict, now_ms: int) -> bool:
@@ -212,8 +263,12 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                     print(json.dumps({"event": "market_data_gap_recovered",
                                       "latest_closed_bar": book.state["events"][-1]["latest_closed_bar"],
                                       "broker_checked": bool(mirror)}), flush=True)
+                if await _expand_universe(book, cfg, state_path, mirror, int(now)):
+                    print(json.dumps({"event": "asset_universe_expanded",
+                                      "added": list(book.state["events"][-1]["added"])}), flush=True)
                 await autotune(int(now))
-                _save(book, state_path, cfg)
+                baseline = cfg if book.cfg.assets == cfg.assets else dataclasses.replace(cfg, assets=book.cfg.assets)
+                _save(book, state_path, baseline)
                 if mirror:
                     try:
                         await asyncio.to_thread(mirror.sync, book)
@@ -226,7 +281,8 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                 if failures >= 3:
                     book.state["halted"] = "consecutive_data_errors"
                 book.state["events"].append({"ts": int(now), "event": "data_error", "error": type(exc).__name__})
-                _save(book, state_path, cfg)
+                baseline = cfg if book.cfg.assets == cfg.assets else dataclasses.replace(cfg, assets=book.cfg.assets)
+                _save(book, state_path, baseline)
                 print(f"paper data error ({failures}): {type(exc).__name__}: {exc}", flush=True)
             if once:
                 return

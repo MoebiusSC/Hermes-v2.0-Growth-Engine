@@ -1,10 +1,14 @@
 import dataclasses
 import asyncio
+import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from hermes_trading.growth import BAR_MS, HOUR_MS, GrowthConfig, Portfolio, candidate
 from hermes_trading.growth_lab import assess
-from hermes_trading.growth_run import _recent_market_data_complete, _recover_market_gap
+from hermes_trading.growth_run import _recent_market_data_complete, _recover_market_gap, _restore, _save, _expand_universe
 from hermes_trading.score import score
 
 
@@ -74,6 +78,43 @@ class GrowthTests(unittest.TestCase):
         self.assertTrue(asyncio.run(_recover_market_gap(p, feeds, now, None)))
         self.assertIsNone(p.state["halted"])
         self.assertEqual(p.state["events"][-1]["event"], "market_data_gap_recovered")
+
+    def test_expand_persisted_universe_only_after_fresh_feed_and_broker_check(self):
+        desired = GrowthConfig()
+        now = 1000 * HOUR_MS
+        last = now - BAR_MS
+        old = Portfolio(self.cfg)
+        old.state["cash"] = 50.2693
+        old.state["last_bar"] = {a: last for a in self.cfg.assets}
+        old.state["events"].append({"event": "exit", "ts": last, "asset": "BTC/USDT"})
+        bars = {"t": [last - i * BAR_MS for i in range(249, -1, -1)]}
+        hours = {"t": [now - HOUR_MS * i for i in range(250, 0, -1)]}
+        for data in (bars, hours):
+            data.update({k: [100.0] * 250 for k in ("open", "high", "low", "close")})
+        async def fetch(asset, tf, limit, fresh=False):
+            return bars if tf == "15m" else hours
+
+        class Broker:
+            available = False
+            def can_expand_assets(self, book, added):
+                self.added = added
+                return self.available
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "account.json"
+            _save(old, path, self.cfg)
+            book = _restore(desired, path)
+            broker = Broker()
+            with patch("hermes_trading.adapters.price.ohlcv", new=fetch):
+                self.assertFalse(asyncio.run(_expand_universe(book, desired, path, broker, now)))
+                self.assertEqual(book.cfg.assets, self.cfg.assets)
+                broker.available = True
+                self.assertTrue(asyncio.run(_expand_universe(book, desired, path, broker, now)))
+            self.assertEqual(broker.added, ("XRP/USDT", "LINK/USDT"))
+            self.assertEqual(book.state["cash"], 50.2693)
+            self.assertEqual(book.state["events"][0]["event"], "exit")
+            self.assertEqual(json.loads(path.read_text())["baseline_config"]["assets"], list(desired.assets))
+            self.assertEqual(_restore(desired, path).cfg.assets, desired.assets)
 
     def test_drawdown_latches_across_restart(self):
         p = Portfolio(self.cfg)
