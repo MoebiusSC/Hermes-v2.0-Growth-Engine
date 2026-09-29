@@ -289,10 +289,15 @@ class Portfolio:
         equity = self.equity()
         remaining_risk = max(0.0, equity * cfg.max_portfolio_risk - self.open_risk())
         remaining_exposure = max(0.0, equity * cfg.max_total_exposure - self.gross_exposure())
-        target_risk = min(equity * cfg.risk_per_trade, remaining_risk)
-        notional = min(target_risk / risk_per_unit * entry if risk_per_unit > 0 else 0.0,
-                       equity * cfg.max_exposure, remaining_exposure,
-                       s["cash"] / (1 + cfg.fee))
+        risk_fraction = risk_per_unit / entry if entry > 0 else 0.0
+        execution_drag = cfg.fee + cfg.slippage + cfg.spread / 2
+        per_trade_cap = equity * cfg.risk_per_trade / risk_fraction if risk_fraction > 0 else 0.0
+        # Reserve enough budget for the equity lost to entry costs, so opening the last slot
+        # cannot push aggregate stop risk above the configured portfolio-risk percentage.
+        global_risk_cap = (remaining_risk / (risk_fraction + cfg.max_portfolio_risk * execution_drag)
+                           if risk_fraction > 0 else 0.0)
+        notional = min(per_trade_cap, global_risk_cap, equity * cfg.max_exposure,
+                       remaining_exposure, s["cash"] / (1 + cfg.fee))
         if notional < cfg.min_order_usd:
             s["events"].append({"ts": ts, "event": "skip", "asset": asset,
                                 "reason": "minimum_order_or_global_risk_budget"})
