@@ -27,14 +27,14 @@ jobs:
           data["max_total_exposure"]=data["max_exposure"]
           Path("growth.single.json").write_text(json.dumps(data,indent=2)+"\n")
           PY
-      - name: Run 365-day single-position control
-        run: python -m hermes_trading.growth_run backtest --config growth.single.json --days 365 | tee single_position_365d.json
-      - name: Run 365-day multi-position benchmark
-        run: python -m hermes_trading.growth_run backtest --config growth.json --days 365 | tee multi_position_365d.json
+      - name: Run 120-day single-position control
+        run: python -m hermes_trading.growth_run backtest --config growth.single.json --days 120 | tee single_position_120d.json
+      - name: Run 120-day multi-position benchmark
+        run: python -m hermes_trading.growth_run backtest --config growth.json --days 120 | tee multi_position_120d.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: multi-position-comparison-365d
+          name: multi-position-comparison-120d
           path: |
-            single_position_365d.json
-            multi_position_365d.json
+            single_position_120d.json
+            multi_position_120d.json
