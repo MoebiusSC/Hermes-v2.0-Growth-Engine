@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from hermes_trading.manual_paper import ASSETS, ManualWallet, OrderError, QuoteError, asset_kind, quote
+from hermes_trading.manual_paper import ASSETS, ManualWallet, OrderError, asset_kind, quote
 
 
 class ManualPaperTests(unittest.TestCase):

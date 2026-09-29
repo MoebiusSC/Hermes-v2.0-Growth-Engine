@@ -3,12 +3,16 @@ import asyncio
 import json
 import tempfile
 import unittest
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
-from hermes_trading.growth import BAR_MS, HOUR_MS, GrowthConfig, Portfolio, candidate
+import numpy as np
+from pathlib import Path
+from unittest.mock import patch
+
+from hermes_trading.growth import (BAR_MS, HOUR_MS, GrowthConfig, Portfolio, candidate,
+                                   sui_replica_candidate)
 from hermes_trading.growth_lab import assess
-from hermes_trading.growth_run import _recent_market_data_complete, _recover_market_gap, _restore, _save, _expand_universe
+from hermes_trading.growth_run import (_recent_market_data_complete, _recover_market_gap, _restore, _save,
+                                       _expand_universe, report)
 from hermes_trading.score import score
 
 
@@ -36,6 +40,35 @@ class GrowthTests(unittest.TestCase):
         self.assertLessEqual(worst, self.cfg.capital * self.cfg.risk_per_trade + 1e-8)
         p.decide([self._signal("ETH/USDT", 2 * BAR_MS)], 2 * BAR_MS)
         self.assertIsNone(p.state["pending"])
+
+    def test_signal_specific_target_and_strategy_are_persisted(self):
+        p = Portfolio(self.cfg)
+        signal = {**self._signal(), "target_r": 3.0, "strategy": "sui_ema_26_55"}
+        p.decide([signal], BAR_MS)
+        p.on_bar("BTC/USDT", self._bar(), BAR_MS)
+        pos = p.state["position"]
+        self.assertAlmostEqual((pos["target"] - pos["entry"]) / (pos["entry"] - pos["stop"]), 3.0, places=6)
+        self.assertEqual(pos["strategy"], "sui_ema_26_55")
+        p.on_bar("BTC/USDT", self._bar(100, pos["stop"] + .1, pos["target"] + 1), 2 * BAR_MS)
+        self.assertEqual(p.state["trades"][0]["strategy"], "sui_ema_26_55")
+
+    def test_sui_replica_only_fires_on_closed_hour_bullish_cross(self):
+        bars = {"t": [59 * HOUR_MS + 45 * 60_000], "open": [100.], "high": [101.],
+                "low": [99.], "close": [100.]}
+        hourly = {"t": [i * HOUR_MS for i in range(60)], "close": [100.] * 60}
+        fast = np.full(60, np.nan)
+        slow = np.full(60, np.nan)
+        fast[-2:], slow[-2:] = [99.9, 100.2], [100.0, 100.1]
+        with patch("hermes_trading.growth.ema_series", side_effect=[fast, slow]):
+            signal = sui_replica_candidate("SUI/USDT", bars, hourly, GrowthConfig())
+        self.assertEqual(signal["strategy"], "sui_ema_26_55")
+        self.assertEqual(signal["target_r"], 3.0)
+        self.assertAlmostEqual(signal["stop_fraction"], 0.018)
+
+        bars["t"][-1] += BAR_MS
+        with patch("hermes_trading.growth.ema_series") as mocked:
+            self.assertIsNone(sui_replica_candidate("SUI/USDT", bars, hourly, GrowthConfig()))
+            mocked.assert_not_called()
 
     def test_stop_wins_when_bar_touches_stop_and_target(self):
         p = Portfolio(self.cfg)
@@ -110,11 +143,30 @@ class GrowthTests(unittest.TestCase):
                 self.assertEqual(book.cfg.assets, self.cfg.assets)
                 broker.available = True
                 self.assertTrue(asyncio.run(_expand_universe(book, desired, path, broker, now)))
-            self.assertEqual(broker.added, ("XRP/USDT", "LINK/USDT"))
+            self.assertEqual(broker.added, ("XRP/USDT", "LINK/USDT", "SUI/USDT"))
             self.assertEqual(book.state["cash"], 50.2693)
             self.assertEqual(book.state["events"][0]["event"], "exit")
             self.assertEqual(json.loads(path.read_text())["baseline_config"]["assets"], list(desired.assets))
             self.assertEqual(_restore(desired, path).cfg.assets, desired.assets)
+
+    def test_report_attributes_per_strategy_metrics(self):
+        p = Portfolio(self.cfg)
+        p.state["trades"] = [
+            {"asset": "BTC/USDT", "pnl": 1.0, "pnl_pct": 0.02, "closed_ms": 1, "strategy": "hermes_core"},
+            {"asset": "BTC/USDT", "pnl": -0.5, "pnl_pct": -0.01, "closed_ms": 2, "strategy": "hermes_core"},
+            {"asset": "SUI/USDT", "pnl": 2.0, "pnl_pct": 0.04, "closed_ms": 3, "strategy": "sui_ema_26_55"},
+        ]
+        p.state["curve"] = [
+            {"ts": "2026-01-01T00:00:00+00:00", "equity": 50.0},
+            {"ts": "2026-01-02T00:00:00+00:00", "equity": 52.5},
+        ]
+        result = report(p)["strategy_metrics"]
+        self.assertEqual(result["hermes_core"]["trades"], 2)
+        self.assertAlmostEqual(result["hermes_core"]["return"], 0.01)
+        self.assertEqual(result["hermes_core"]["profit_factor"], 2.0)
+        self.assertEqual(result["sui_ema_26_55"]["trades"], 1)
+        self.assertAlmostEqual(result["sui_ema_26_55"]["return"], 0.04)
+        self.assertEqual(result["sui_ema_26_55"]["win_rate"], 1.0)
 
     def test_drawdown_latches_across_restart(self):
         p = Portfolio(self.cfg)

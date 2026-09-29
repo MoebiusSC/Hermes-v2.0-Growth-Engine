@@ -17,11 +17,17 @@ from .strategy import atr_series, ema_series, rsi_series
 BAR_MS = 15 * 60_000
 HOUR_MS = 60 * 60_000
 
+SUI_REPLICA_ASSET = "SUI/USDT"
+SUI_REPLICA_FAST_EMA = 26
+SUI_REPLICA_SLOW_EMA = 55
+SUI_REPLICA_STOP_FRACTION = 0.018
+SUI_REPLICA_TARGET_R = 3.0
+
 
 @dataclasses.dataclass(frozen=True)
 class GrowthConfig:
     capital: float = 50.0
-    assets: tuple[str, ...] = ("BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "LINK/USDT")
+    assets: tuple[str, ...] = ("BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "LINK/USDT", "SUI/USDT")
     risk_per_trade: float = 0.005
     max_exposure: float = 0.50
     daily_loss: float = 0.015
@@ -102,7 +108,47 @@ def candidate(asset: str, bars: dict, hourly: dict, cfg: GrowthConfig) -> dict |
     if potential <= cfg.min_edge_multiple * round_trip_cost:
         return None
     return {"asset": asset, "regime": regime, "strength": float(strength),
-            "stop_fraction": stop_distance / float(close[-1]), "decision_ms": int(bars["t"][-1]) + BAR_MS}
+            "stop_fraction": stop_distance / float(close[-1]), "decision_ms": int(bars["t"][-1]) + BAR_MS,
+            "strategy": "hermes_core", "target_r": cfg.target_r}
+
+
+def sui_replica_candidate(asset: str, bars: dict, hourly: dict, cfg: GrowthConfig) -> dict | None:
+    """Long-only adaptation of the validated SUI EMA(26/55) replica on closed 1h candles."""
+    if asset != SUI_REPLICA_ASSET or not bars.get("t"):
+        return None
+    decision_ms = int(bars["t"][-1]) + BAR_MS
+    if decision_ms % HOUR_MS:
+        return None
+    hour = _closed_hourly(hourly, decision_ms)
+    if len(hour) < SUI_REPLICA_SLOW_EMA + 2 or hour[-1] <= 0:
+        return None
+    fast = ema_series(hour, SUI_REPLICA_FAST_EMA)
+    slow = ema_series(hour, SUI_REPLICA_SLOW_EMA)
+    if not np.all(np.isfinite([fast[-1], fast[-2], slow[-1], slow[-2]])):
+        return None
+    if not (fast[-2] <= slow[-2] and fast[-1] > slow[-1]):
+        return None
+    potential = SUI_REPLICA_TARGET_R * SUI_REPLICA_STOP_FRACTION
+    round_trip_cost = 2 * (cfg.fee + cfg.slippage) + cfg.spread
+    if potential <= cfg.min_edge_multiple * round_trip_cost:
+        return None
+    relative_gap = max(0.0, float(fast[-1] - slow[-1]) / float(hour[-1]))
+    strength = 0.12 + min(0.08, relative_gap * 10)
+    return {"asset": asset, "regime": "SUI_EMA_REPLICA", "strength": strength,
+            "stop_fraction": SUI_REPLICA_STOP_FRACTION, "decision_ms": decision_ms,
+            "strategy": "sui_ema_26_55", "target_r": SUI_REPLICA_TARGET_R}
+
+
+def signals_for_asset(asset: str, bars: dict, hourly: dict, cfg: GrowthConfig) -> list[dict]:
+    """Core Hermes signal plus opt-in experimental signals for the same synchronized close."""
+    out = []
+    core = candidate(asset, bars, hourly, cfg)
+    if core:
+        out.append(core)
+    replica = sui_replica_candidate(asset, bars, hourly, cfg)
+    if replica:
+        out.append(replica)
+    return out
 
 
 class Portfolio:
@@ -150,9 +196,12 @@ class Portfolio:
         pnl = proceeds - pos["cost"]
         s["trades"].append({"asset": pos["asset"], "opened_ms": pos["opened_ms"], "closed_ms": ts,
                             "entry": pos["entry"], "exit": price, "qty": qty, "pnl": pnl,
-                            "pnl_pct": pnl / pos["equity_at_entry"], "reason": reason, "regime": pos["regime"]})
+                            "pnl_pct": pnl / pos["equity_at_entry"], "reason": reason, "regime": pos["regime"],
+                            "strategy": pos.get("strategy", "hermes_core"),
+                            "target_r": pos.get("target_r", cfg.target_r)})
         s["position"] = None
-        s["events"].append({"ts": ts, "event": "exit", "asset": pos["asset"], "reason": reason})
+        s["events"].append({"ts": ts, "event": "exit", "asset": pos["asset"], "reason": reason,
+                            "strategy": pos.get("strategy", "hermes_core")})
 
     def _open(self, ts: int, bar: dict, signal: dict) -> None:
         s, cfg = self.state, self.cfg
@@ -172,10 +221,14 @@ class Portfolio:
         qty = notional / entry
         cost = notional * (1 + cfg.fee)
         s["cash"] -= cost
+        target_r = float(signal.get("target_r", cfg.target_r))
+        strategy = str(signal.get("strategy", "hermes_core"))
         s["position"] = {"asset": signal["asset"], "entry": entry, "qty": qty, "cost": cost,
-                         "stop": entry - dist, "target": entry + cfg.target_r * dist,
-                         "opened_ms": ts, "equity_at_entry": equity, "regime": signal["regime"]}
-        s["events"].append({"ts": ts, "event": "entry", "asset": signal["asset"], "notional": notional})
+                         "stop": entry - dist, "target": entry + target_r * dist,
+                         "opened_ms": ts, "equity_at_entry": equity, "regime": signal["regime"],
+                         "strategy": strategy, "target_r": target_r}
+        s["events"].append({"ts": ts, "event": "entry", "asset": signal["asset"], "notional": notional,
+                            "strategy": strategy})
 
     def on_bar(self, asset: str, bar: dict, ts: int) -> None:
         """Process exactly one completed 15m bar; pending decision must be from an earlier close."""
@@ -251,8 +304,6 @@ def replay(cfg: GrowthConfig, candles: Mapping[str, dict], hourly: Mapping[str, 
             book.on_bar(asset, bar, ts)
             # Freeze all inputs at this close. Last 15m bar is t=ts, 1h bars are filtered by close.
             sub = {k: data[k][max(0, i - 160):i + 1] for k in ("t", "open", "high", "low", "close")}
-            signal = candidate(asset, sub, hourly[asset], cfg)
-            if signal:
-                signals.append(signal)
+            signals.extend(signals_for_asset(asset, sub, hourly[asset], cfg))
         book.decide(signals if ts + BAR_MS >= trade_after_ms else [], ts + BAR_MS)
     return book

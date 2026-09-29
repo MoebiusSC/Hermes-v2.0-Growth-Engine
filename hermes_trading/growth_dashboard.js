@@ -100,15 +100,31 @@ function renderAssets(data) {
   }
 }
 
+function renderStrategies(data) {
+  const tbody=$('strategy-rows');tbody.replaceChildren();
+  const rows=data.metrics?.strategy_metrics||{};
+  const labels={hermes_core:'Hermes Core',sui_ema_26_55:'SUI EMA 26/55'};
+  for (const name of ['hermes_core','sui_ema_26_55']) {
+    const item=rows[name]||{trades:0,pnl:0,return:0,win_rate:0,profit_factor:null,max_drawdown:0};
+    const pnl=Number(item.pnl??0);
+    const values=[labels[name]||name,String(item.trades??0),
+      (pnl>=0?'+':'')+pnl.toFixed(4)+' USDT',
+      pct(item.return??0),pct(item.win_rate??0),
+      item.profit_factor===null?'—':number(item.profit_factor),pct(item.max_drawdown??0)];
+    values.forEach((value,index)=>{const cell=row.insertCell();cell.textContent=value;
+      if(index===2||index===3) cell.className=pnl>=0?'positive':'negative';});
+  }
+}
+
 function renderRows(data) {
   const tbody=$('trade-rows');tbody.replaceChildren();
   if (!data.trades.length) {
-    const row=tbody.insertRow(),cell=row.insertCell();cell.colSpan=5;cell.className='empty';cell.textContent='Aún no hay operaciones cerradas';
+    const row=tbody.insertRow(),cell=row.insertCell();cell.colSpan=6;cell.className='empty';cell.textContent='Aún no hay operaciones cerradas';
   } else for (const trade of data.trades.slice(0,12)) {
     const row=tbody.insertRow();
-    for (const value of [utc(trade.closed_ms),trade.asset,trade.regime,trade.reason,`${trade.pnl>=0?'+':''}${Number(trade.pnl).toFixed(4)} USDT`]) {
+    for (const value of [utc(trade.closed_ms),trade.asset,trade.strategy||'hermes_core',trade.regime,trade.reason,`${trade.pnl>=0?'+':''}${Number(trade.pnl).toFixed(4)} USDT`]) {
       const cell=row.insertCell();cell.textContent=value;
-      if (cell.cellIndex===4) cell.className=trade.pnl>=0?'positive':'negative';
+      if (cell.cellIndex===5) cell.className=trade.pnl>=0?'positive':'negative';
     }
   }
   const events=$('events');events.replaceChildren();
@@ -132,7 +148,7 @@ function render(data) {
   $('return').textContent=pct(m.realised_return);$('return').className=`value ${m.realised_return>=0?'positive':'negative'}`;
   $('drawdown').textContent=pct(m.max_drawdown);$('trades-count').textContent=m.n;
   $('win-rate').textContent=`Tasa de acierto: ${pct(m.win_rate)}`;
-  $('position').textContent=data.position?`${data.position.asset} · ${data.position.regime}`:'Sin posición';
+  $('position').textContent=data.position?`${data.position.asset} · ${data.position.strategy||'hermes_core'} · ${data.position.regime}`:'Sin posición';
   $('entry-stop').textContent=data.position?`${number(data.position.entry)} / ${number(data.position.stop)}`:'—';
   $('target').textContent=data.position?`${number(data.position.target)} USDT`:'—';
   $('cash').textContent=money(m.cash);$('risk').textContent=pct(data.risk.risk_per_trade);
@@ -144,7 +160,7 @@ function render(data) {
   $('optimizer-last').textContent=opt.last_decision?`${opt.last_decision.event||'evaluación'} · ${opt.last_decision.reason||opt.last_decision.change?.field||'—'}`:'Aún sin evaluación';
   $('optimizer-alpha').textContent=data.alpha?`RSI rango ${data.alpha.range_rsi} · RSI tendencia ${data.alpha.trend_rsi} · objetivo ${data.alpha.target_r}R · stop ${data.alpha.stop_atr} ATR`:'—';
   currentV2=data;renderComparison();
-  drawCurve(data.curve);renderAssets(data);renderRows(data);
+  drawCurve(data.curve);renderAssets(data);renderStrategies(data);renderRows(data);
 }
 
 async function refresh() {

@@ -50,7 +50,8 @@ def snapshot(path: Path) -> dict:
         "initial_capital": cfg.capital,
         "assets": cfg.assets,
         "metrics": report(book),
-        "position": ({k: position[k] for k in ("asset", "entry", "qty", "stop", "target", "regime", "opened_ms")}
+        "position": ({k: position.get(k) for k in ("asset", "entry", "qty", "stop", "target", "regime",
+                                                        "strategy", "target_r", "opened_ms")}
                      if position else None),
         "risk": {key: getattr(cfg, key) for key in ("risk_per_trade", "max_exposure", "daily_loss",
                                                    "weekly_loss", "monthly_drawdown")},
