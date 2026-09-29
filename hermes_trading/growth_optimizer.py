@@ -88,7 +88,7 @@ def record(meta: dict, decision: dict, now_ms: int) -> None:
 def forward_verdict(meta: dict, state: dict, equity: float, now_ms: int) -> str | None:
     """Conservative live loss guard; a negative cohort is not proof of causation."""
     active = meta.get("active_change")
-    if not active or state["position"] or state["pending"]:
+    if not active or state["positions"] or state["pending"]:
         return None
     if (now_ms - active["applied_ms"] < FORWARD_DAYS * DAY_MS or
             len(state["trades"]) - active["trade_count"] < FORWARD_TRADES):
