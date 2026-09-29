@@ -44,12 +44,12 @@ $('original-file').addEventListener('change',async event=>{
 
 function line(svg, points, min, max, color) {
   const ns = 'http://www.w3.org/2000/svg';
-  const x = i => 10 + i * 680 / Math.max(points.length - 1, 1);
-  const y = value => 215 - (value - min) * 185 / Math.max(max - min, 0.000001);
+  const x = i => 76 + i * 608 / Math.max(points.length - 1, 1);
+  const y = value => 205 - (value - min) * 175 / Math.max(max - min, 0.000001);
   const values = points.map(p => Number(p.equity));
   const d = values.map((v,i) => `${i ? 'L' : 'M'}${x(i).toFixed(2)} ${y(v).toFixed(2)}`).join(' ');
   const area = document.createElementNS(ns,'path');
-  area.setAttribute('d', `${d} L${x(values.length-1)} 225 L10 225 Z`);
+  area.setAttribute('d', `${d} L${x(values.length-1)} 205 L76 205 Z`);
   area.setAttribute('fill',color === '#70e1cd' ? '#70e1cd13' : '#ff879213');
   const path = document.createElementNS(ns,'path');
   path.setAttribute('d',d); path.setAttribute('stroke',color); path.setAttribute('stroke-width','2.5');
@@ -57,9 +57,15 @@ function line(svg, points, min, max, color) {
   svg.append(area,path);
   for (const v of [min,(min+max)/2,max]) {
     const grid = document.createElementNS(ns,'line'); const yy = y(v);
-    grid.setAttribute('x1','10'); grid.setAttribute('x2','690'); grid.setAttribute('y1',yy); grid.setAttribute('y2',yy);
+    grid.setAttribute('x1','76'); grid.setAttribute('x2','684'); grid.setAttribute('y1',yy); grid.setAttribute('y2',yy);
     grid.setAttribute('stroke','#263746'); grid.setAttribute('stroke-dasharray','3 6'); svg.insertBefore(grid,area);
+    const tick=document.createElementNS(ns,'text');tick.setAttribute('x','68');tick.setAttribute('y',yy+4);
+    tick.setAttribute('text-anchor','end');tick.textContent=Number(v).toFixed(2);svg.append(tick);
   }
+  const marker=document.createElementNS(ns,'circle');marker.setAttribute('cx',x(values.length-1));
+  marker.setAttribute('cy',y(values.at(-1)));marker.setAttribute('r','4');marker.setAttribute('fill',color);
+  const title=document.createElementNS(ns,'title');title.textContent=`Último capital: ${values.at(-1).toFixed(2)} USDT`;
+  marker.append(title);svg.append(marker);
 }
 
 function drawCurve(points) {
@@ -68,14 +74,30 @@ function drawCurve(points) {
   if (clean.length < 2) {
     const label=document.createElementNS('http://www.w3.org/2000/svg','text');
     label.setAttribute('x','20');label.setAttribute('y','120');label.setAttribute('fill','#92a8b4');
-    label.textContent='La curva aparecerá después del primer ciclo';svg.append(label);return;
+    label.textContent='La curva aparecerá después del primer ciclo';svg.append(label);
+    $('chart-start').textContent='—';$('chart-end').textContent='—';$('chart-range').textContent='—';return;
   }
   const values=clean.map(p=>Number(p.equity)), low=Math.min(...values), high=Math.max(...values);
   const pad=Math.max((high-low)*.12,0.03);
   line(svg,clean,low-pad,high+pad,values.at(-1)>=values[0]?'#70e1cd':'#ff8792');
   $('chart-start').textContent=utc(Date.parse(clean[0].ts));
   $('chart-end').textContent=utc(Date.parse(clean.at(-1).ts));
-  $('chart-range').textContent=`${number(low)} – ${number(high)} USDT`;
+  $('chart-range').textContent=`Último: ${values.at(-1).toFixed(2)} USDT · escala USDT`;
+}
+
+function renderAssets(data) {
+  const tbody=$('asset-rows');tbody.replaceChildren();
+  const assets=Array.isArray(data.assets)?data.assets:[];
+  $('asset-count').textContent=`${assets.length} monedas · ${data.position?'1 activa':'0 activas'}`;
+  for (const asset of assets) {
+    const active=data.position?.asset===asset;
+    const row=tbody.insertRow();row.insertCell().textContent=asset;
+    const status=row.insertCell(),pill=document.createElement('span');
+    pill.className=`state-pill${active?' active':''}`;pill.textContent=active?'Activa':'Sin operación';status.append(pill);
+    row.insertCell().textContent=active?number(data.position.qty):'—';
+    const bar=data.last_bar?.[asset];row.insertCell().textContent=Number.isFinite(bar)?`${utc(bar)} UTC`:'Sin datos';
+    row.insertCell().textContent=String(data.metrics?.trades_by_asset?.[asset]??0);
+  }
 }
 
 function renderRows(data) {
@@ -122,7 +144,7 @@ function render(data) {
   $('optimizer-last').textContent=opt.last_decision?`${opt.last_decision.event||'evaluación'} · ${opt.last_decision.reason||opt.last_decision.change?.field||'—'}`:'Aún sin evaluación';
   $('optimizer-alpha').textContent=data.alpha?`RSI rango ${data.alpha.range_rsi} · RSI tendencia ${data.alpha.trend_rsi} · objetivo ${data.alpha.target_r}R · stop ${data.alpha.stop_atr} ATR`:'—';
   currentV2=data;renderComparison();
-  drawCurve(data.curve);renderRows(data);
+  drawCurve(data.curve);renderAssets(data);renderRows(data);
 }
 
 async function refresh() {

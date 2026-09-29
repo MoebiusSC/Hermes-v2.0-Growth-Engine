@@ -32,6 +32,10 @@
     .grid { display:grid; grid-template-columns:minmax(0,1.8fr) minmax(300px,1fr); gap:13px; margin-bottom:13px }
     .card-head { display:flex; align-items:start; justify-content:space-between; gap:12px; margin-bottom:16px }
     h3 { margin:0; font-size:17px; font-weight:620; letter-spacing:-.025em }.chart { width:100%; height:245px; display:block; overflow:visible }
+    .chart text { fill:var(--muted); font-size:11px; font-variant-numeric:tabular-nums }
+    .state-pill { display:inline-block; border-radius:999px; padding:5px 9px; font-size:11px; font-weight:700;
+      background:#122934; color:var(--muted) }
+    .state-pill.active { background:#0d3530; color:var(--teal) }
     .axis { display:flex; justify-content:space-between; color:#728c9a; font-size:11px; margin-top:10px }
     .row { display:flex; justify-content:space-between; gap:18px; border-bottom:1px solid var(--line); padding:12px 0; font-size:13px }
     .row:last-child { border:0 }.row span:first-child { color:var(--muted) }.row strong { font-weight:590; text-align:right; font-variant-numeric:tabular-nums }
@@ -83,6 +87,11 @@
       <div class="row"><span>Objetivo</span><strong id="target">—</strong></div><div class="row"><span>Efectivo disponible</span><strong id="cash">—</strong></div>
       <div class="row"><span>Riesgo / operación</span><strong id="risk">—</strong></div><div class="row"><span>Exposición máxima</span><strong id="exposure">—</strong></div>
       <div class="row"><span>Profit factor</span><strong id="pf">—</strong></div></div>
+  </section>
+  <section class="card" style="margin-bottom:13px" aria-label="Monedas evaluadas por el motor automático">
+    <div class="card-head"><div><div class="label" style="margin-bottom:6px">Universo automático</div><h3>Monedas evaluadas</h3></div><span class="small" id="asset-count">—</span></div>
+    <p class="note">Una sola posición del motor puede estar abierta a la vez. «Sin operación» indica que el bot no mantiene una posición en esa moneda; no indica una orden de compra.</p>
+    <div class="table-wrap"><table><thead><tr><th>Moneda</th><th>Operación activa</th><th>Unidades abiertas</th><th>Última vela (inicio UTC)</th><th>Operaciones cerradas</th></tr></thead><tbody id="asset-rows"></tbody></table></div>
   </section>
   <section class="grid"><div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Historial</div><h3>Operaciones recientes</h3></div></div>
     <div class="table-wrap"><table><thead><tr><th>Fecha UTC</th><th>Activo</th><th>Régimen</th><th>Salida</th><th>Resultado</th></tr></thead><tbody id="trade-rows"></tbody></table></div></div>
