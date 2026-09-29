@@ -16,18 +16,44 @@ from .storage import atomic_write
 from .strategy import closed
 
 
+def _strategy_metrics(trades: list[dict], capital: float) -> dict:
+    names = sorted({t.get("strategy", "hermes_core") for t in trades} | {"hermes_core", "sui_ema_26_55"})
+    result = {}
+    for name in names:
+        rows = [t for t in trades if t.get("strategy", "hermes_core") == name]
+        pnl = sum(float(t["pnl"]) for t in rows)
+        wins = [float(t["pnl"]) for t in rows if float(t["pnl"]) > 0]
+        losses = [-float(t["pnl"]) for t in rows if float(t["pnl"]) < 0]
+        equity, peak, max_dd = capital, capital, 0.0
+        for trade in sorted(rows, key=lambda x: x["closed_ms"]):
+            equity += float(trade["pnl"])
+            peak = max(peak, equity)
+            if peak > 0:
+                max_dd = max(max_dd, (peak - equity) / peak)
+        result[name] = {
+            "trades": len(rows),
+            "pnl": round(pnl, 6),
+            "return": pnl / capital if capital else 0.0,
+            "win_rate": len(wins) / len(rows) if rows else 0.0,
+            "profit_factor": round(sum(wins) / sum(losses), 3) if losses else (None if not wins else 999.0),
+            "max_drawdown": max_dd,
+        }
+    return result
+
+
 def report(book: Portfolio) -> dict:
     s = book.state
     trades, curve = s["trades"], s["curve"]
     m = metrics(trades, curve)
     wins = sum(t["pnl"] for t in trades if t["pnl"] > 0)
     losses = -sum(t["pnl"] for t in trades if t["pnl"] < 0)
+    by_strategy = _strategy_metrics(trades, book.cfg.capital)
     return {**m, "equity": round(book.equity(), 4), "cash": round(s["cash"], 4),
             "profit_factor": round(wins / losses, 3) if losses else None,
             "halted": s["halted"], "trades_by_asset": {a: sum(t["asset"] == a for t in trades)
                                                       for a in book.cfg.assets},
-            "trades_by_strategy": {name: sum(t.get("strategy", "hermes_core") == name for t in trades)
-                                   for name in sorted({t.get("strategy", "hermes_core") for t in trades})}}
+            "trades_by_strategy": {name: row["trades"] for name, row in by_strategy.items()},
+            "strategy_metrics": by_strategy}
 
 
 def _load_config(path: Path) -> GrowthConfig:
