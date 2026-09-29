@@ -264,7 +264,7 @@ def main() -> None:
             out.append(search(asset, TARGETS[asset], args.days))
         except Exception as e:
             out.append({"asset": asset, "error": f"{type(e).__name__}: {e}"})
-    print(json.dumps({"method": "ema_crossover_fixed_stop_target", "fee_per_side": FEE, "slippage_per_side": SLIPPAGE, "results": out}, indent=2))
+    print(json.dumps({"method": "ema_crossover_fixed_stop_target", "fee_per_side": FEE, "slippage_per_side": SLIPPAGE, "results": out}, indent=2, default=lambda o: o.item() if isinstance(o, np.generic) else str(o)))
 
 
 if __name__ == "__main__":
