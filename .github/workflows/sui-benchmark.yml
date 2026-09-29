@@ -1,0 +1,25 @@
+name: SUI Portfolio Benchmark
+
+on:
+  push:
+    branches:
+      - feature/sui-replica
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e .
+      - name: Run 730-day portfolio benchmark
+        run: python -m hermes_trading.growth_run backtest --days 730 | tee sui_portfolio_730d.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sui-portfolio-730d
+          path: sui_portfolio_730d.json
