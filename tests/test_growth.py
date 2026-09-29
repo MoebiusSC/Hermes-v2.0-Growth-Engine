@@ -11,7 +11,8 @@ from unittest.mock import patch
 from hermes_trading.growth import (BAR_MS, HOUR_MS, GrowthConfig, Portfolio, candidate,
                                    sui_replica_candidate)
 from hermes_trading.growth_lab import assess
-from hermes_trading.growth_run import _recent_market_data_complete, _recover_market_gap, _restore, _save, _expand_universe
+from hermes_trading.growth_run import (_recent_market_data_complete, _recover_market_gap, _restore, _save,
+                                       _expand_universe, report)
 from hermes_trading.score import score
 
 
@@ -147,6 +148,21 @@ class GrowthTests(unittest.TestCase):
             self.assertEqual(book.state["events"][0]["event"], "exit")
             self.assertEqual(json.loads(path.read_text())["baseline_config"]["assets"], list(desired.assets))
             self.assertEqual(_restore(desired, path).cfg.assets, desired.assets)
+
+    def test_report_attributes_per_strategy_metrics(self):
+        p = Portfolio(self.cfg)
+        p.state["trades"] = [
+            {"asset": "BTC/USDT", "pnl": 1.0, "closed_ms": 1, "strategy": "hermes_core"},
+            {"asset": "BTC/USDT", "pnl": -0.5, "closed_ms": 2, "strategy": "hermes_core"},
+            {"asset": "SUI/USDT", "pnl": 2.0, "closed_ms": 3, "strategy": "sui_ema_26_55"},
+        ]
+        result = report(p)["strategy_metrics"]
+        self.assertEqual(result["hermes_core"]["trades"], 2)
+        self.assertAlmostEqual(result["hermes_core"]["return"], 0.01)
+        self.assertEqual(result["hermes_core"]["profit_factor"], 2.0)
+        self.assertEqual(result["sui_ema_26_55"]["trades"], 1)
+        self.assertAlmostEqual(result["sui_ema_26_55"]["return"], 0.04)
+        self.assertEqual(result["sui_ema_26_55"]["win_rate"], 1.0)
 
     def test_drawdown_latches_across_restart(self):
         p = Portfolio(self.cfg)
