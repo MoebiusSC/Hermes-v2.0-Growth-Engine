@@ -1,0 +1,25 @@
+name: Multi Position Benchmark
+
+on:
+  push:
+    branches:
+      - feature/multi-position-risk-budget
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e .
+      - name: Run 365-day multi-position benchmark
+        run: python -m hermes_trading.growth_run backtest --days 365 | tee multi_position_365d.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: multi-position-365d
+          path: multi_position_365d.json
