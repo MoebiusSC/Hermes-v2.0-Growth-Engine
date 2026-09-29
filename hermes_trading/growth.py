@@ -356,12 +356,7 @@ class Portfolio:
                     strongest_by_asset[signal["asset"]] = signal
             ranked = sorted(strongest_by_asset.values(),
                             key=lambda x: (x["strength"], x["asset"]), reverse=True)
-            position_slots = max(0, cfg.max_positions - len(s["positions"]) - len(s["pending"]))
-            eq = self.equity()
-            remaining_risk = max(0.0, eq * cfg.max_portfolio_risk - self.open_risk())
-            nominal_trade_risk = max(eq * cfg.risk_per_trade, 1e-12)
-            risk_slots = int((remaining_risk + 1e-12) // nominal_trade_risk)
-            slots = min(position_slots, risk_slots)
+            slots = max(0, cfg.max_positions - len(s["positions"]) - len(s["pending"]))
             for rank, signal in enumerate(ranked[:slots]):
                 s["pending"][signal["asset"]] = {**signal, "rank": rank}
         s["curve"].append({"ts": _day(ts).isoformat(), "equity": self.equity()})
