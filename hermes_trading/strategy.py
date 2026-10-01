@@ -142,9 +142,10 @@ def ema_series(closes, n: int = TREND_EMA) -> np.ndarray:
 def closed(candles: dict, tf: str, now_ms: float | None = None) -> dict:
     """Drop the still-forming last candle. candles: {t, open, high, low, close} lists, t = bar start ms."""
     now_ms = time.time() * 1000 if now_ms is None else now_ms
-    n = len(candles["t"])
-    if n and candles["t"][-1] + TF_SECONDS[tf] * 1000 > now_ms:
-        return {k: v[:-1] for k, v in candles.items()}
+    indices = [i for i, ts in enumerate(candles["t"]) if ts + TF_SECONDS[tf] * 1000 <= now_ms]
+    if len(indices) != len(candles["t"]):
+        return {k: [v[i] for i in indices] if isinstance(v, list) else v
+                for k, v in candles.items()}
     return candles
 
 
