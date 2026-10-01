@@ -165,10 +165,14 @@ function renderRows(data) {
 function render(data) {
   if (!data||!data.ready) { $('status').textContent=data?.message||'Esperando datos';$('status-dot').className='dot warn';return; }
   const m=data.metrics||{}, age=Date.now()-Number(data.updated_at||0)*1000, halted=m.halted;
-  $('status').textContent=halted?`Pausado: ${halted}`:age>300000?'Datos sin actualizar':'Paper en observación';
-  $('status-dot').className=halted?'dot bad':age>300000?'dot warn':'dot';
-  const banner=$('banner');banner.style.display=halted?'block':'none';
-  banner.textContent=halted?`Entradas detenidas por ${halted}. Revise los datos y el estado persistente antes de reanudar.`:'';
+  const market=m.market_data||{}, waiting=market.status==='waiting', problems=market.problems||[];
+  $('status').textContent=halted?`Pausado: ${halted}`:waiting?'Esperando publicación de velas':age>300000?'Datos sin actualizar':'Paper en observación';
+  $('status-dot').className=halted?'dot bad':waiting||age>300000?'dot warn':'dot';
+  const banner=$('banner');banner.style.display=halted||waiting?'block':'none';
+  const detail=problems.map(p=>`${p.asset}${p.source?` (${p.source})`:''}: ${p.reason}${p.first_missing_bar?` desde ${utc(p.first_missing_bar)} UTC`:''}`).join('; ');
+  const dataPause=['market_data_gap','stale_or_unsynchronized_market_data','consecutive_data_errors','missing_current_quote'].includes(halted);
+  banner.textContent=waiting&&!halted?'Esperando velas completas para todos los activos. Se comprobarán de nuevo en el siguiente ciclo.':
+    halted?`Entradas detenidas por ${halted}. ${dataPause?'Recuperación automática tras verificar velas, posiciones y Alpaca paper.':'Revise el estado persistente antes de reanudar.'}${detail?` ${detail}.`:''}${market.recovery?` Reconciliación: ${market.recovery}.`:''}`:'';
   $('equity').textContent=money(m.equity);$('capital').textContent=`Capital inicial: ${money(data.initial_capital)}`;
   $('return').textContent=pct(m.realised_return);$('return').className=`value ${m.realised_return>=0?'positive':'negative'}`;
   $('drawdown').textContent=pct(m.max_drawdown);$('trades-count').textContent=m.n;

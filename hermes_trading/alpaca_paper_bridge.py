@@ -380,9 +380,18 @@ class PaperAuto(SharedPaper):
         """Clear only a stale transport warning after checking the paper broker."""
         if book.state["positions"] or book.state["pending"]:
             return False
+        return self.reconcile_market_recovery(book)
+
+    def reconcile_market_recovery(self, book) -> bool:
+        """Read-only ownership gate, also for existing mirrored positions."""
+        if book.state["pending"]:
+            return False
         with _LOCK:
             s = self.load()
-            if s["pending"] or s["auto"]:
+            if s["pending"]:
+                return False
+            expected = set(book.state["positions"]) - set(s["skipped_assets"])
+            if expected != set(s["auto"]) or (expected and s["cursor"] is None):
                 return False
             if s["cursor"] is not None and s["cursor"] != len(book.state["events"]):
                 return False

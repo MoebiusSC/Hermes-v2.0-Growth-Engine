@@ -112,6 +112,39 @@ async def ohlcv(asset: str, tf: str, limit: int, fresh: bool = False) -> dict:
             continue
         candles = {"t": [int(r[0]) for r in rows], "open": [float(r[1]) for r in rows], "high": [float(r[2]) for r in rows],
                    "low": [float(r[3]) for r in rows], "close": [float(r[4]) for r in rows]}
+        candles["source"] = exchange_id
+        _preferred[asset] = exchange_id
         _ohlcv_cache[key] = (time.monotonic(), candles)
         return candles
     raise RuntimeError(f"no exchange returned {tf} candles — " + "; ".join(errors))
+
+
+async def backfill(asset: str, candles: dict, since_ms: int, until_ms: int) -> dict:
+    """Bounded 15m repair from the same source; never synthesize missing candles."""
+    from ..growth import BAR_MS
+
+    if until_ms - since_ms > 7 * 24 * 60 * 60_000:
+        raise RuntimeError(f"{asset}: recovery exceeds seven-day backfill bound")
+    source = candles.get("source")
+    if not source:
+        raise RuntimeError(f"{asset}: missing source for backfill")
+    client = _client(source, source == env("EXCHANGE_ID", "binance"))
+    rows_by_time = {}
+    cursor = since_ms
+    for _ in range(12):
+        rows = await client.fetch_ohlcv(asset, timeframe="15m", since=cursor, limit=100)
+        if not rows:
+            break
+        for row in rows:
+            if since_ms <= int(row[0]) <= until_ms:
+                rows_by_time[int(row[0])] = row
+        next_cursor = max(int(r[0]) for r in rows) + BAR_MS
+        if next_cursor <= cursor or next_cursor > until_ms:
+            break
+        cursor = next_cursor
+    # Latest request wins for overlapping candles, including the forming quote.
+    for i, ts in enumerate(candles["t"]):
+        rows_by_time[ts] = [ts] + [candles[k][i] for k in ("open", "high", "low", "close")]
+    rows = [rows_by_time[ts] for ts in sorted(rows_by_time)]
+    return {"source": source, "t": [int(r[0]) for r in rows],
+            **{k: [float(r[i]) for r in rows] for i, k in enumerate(("open", "high", "low", "close"), 1)}}

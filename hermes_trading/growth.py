@@ -321,7 +321,8 @@ class Portfolio:
         s["events"].append({"ts": ts, "event": "entry", "asset": asset, "notional": notional,
                             "risk_amount": risk_amount, "strategy": strategy})
 
-    def on_bar(self, asset: str, bar: dict, ts: int) -> None:
+    def on_bar(self, asset: str, bar: dict, ts: int,
+               recovery_quote: tuple[float, int] | None = None) -> None:
         """Process exactly one completed 15m bar; each asset may fill one queued signal."""
         s = self.state
         if asset not in self.cfg.assets or s["last_bar"].get(asset, -1) >= ts:
@@ -343,14 +344,19 @@ class Portfolio:
             self._open(ts, bar, pending)
         pos = s["positions"].get(asset)
         if pos:
-            if bar["low"] <= pos["stop"]:
+            delayed = recovery_quote is not None and recovery_quote[1] - (ts + BAR_MS) > 120_000
+            if delayed and (bar["low"] <= pos["stop"] or bar["high"] >= pos["target"]):
+                reason = "stop" if bar["low"] <= pos["stop"] else "target"
+                self._close(asset, recovery_quote[1], recovery_quote[0] *
+                            (1 - self.cfg.slippage - self.cfg.spread / 2), "market_data_recovery_" + reason)
+            elif bar["low"] <= pos["stop"]:
                 self._close(asset, ts + BAR_MS, min(float(bar["open"]), pos["stop"]) *
                             (1 - self.cfg.slippage - self.cfg.spread / 2), "stop")
             elif bar["high"] >= pos["target"]:
                 self._close(asset, ts + BAR_MS, max(float(bar["open"]), pos["target"]) *
                             (1 - self.cfg.slippage - self.cfg.spread / 2), "target")
         s["marks"][asset] = float(bar["close"])
-        self._limits(ts + BAR_MS)
+        self._limits(recovery_quote[1] if recovery_quote else ts + BAR_MS)
 
     def decide(self, signals: list[dict], ts: int) -> None:
         """Rank signals globally and queue as many as the position/risk budget permits."""

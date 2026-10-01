@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from .growth import BAR_MS, GrowthConfig, Portfolio, replay, signals_for_asset
+from .growth_market import DATA_HALTS, audit_open_positions, current_quote, pause, prepare_feeds
 from .score import metrics
 from .storage import atomic_write
 from .strategy import closed
@@ -50,7 +51,7 @@ def report(book: Portfolio) -> dict:
     by_strategy = _strategy_metrics(trades, book.cfg.capital)
     return {**m, "equity": round(book.equity(), 4), "cash": round(s["cash"], 4),
             "profit_factor": round(wins / losses, 3) if losses else None,
-            "halted": s["halted"], "trades_by_asset": {a: sum(t["asset"] == a for t in trades)
+            "halted": s["halted"], "market_data": s.get("market_data"), "trades_by_asset": {a: sum(t["asset"] == a for t in trades)
                                                       for a in book.cfg.assets},
             "trades_by_strategy": {name: row["trades"] for name, row in by_strategy.items()},
             "strategy_metrics": by_strategy, **book.risk_snapshot()}
@@ -140,7 +141,7 @@ async def _expand_universe(book: Portfolio, desired: GrowthConfig, state_path: P
 
 def _recent_market_data_complete(book: Portfolio, feeds: dict, now_ms: int) -> bool:
     """Require three hours of synchronized, complete closed candles before recovery."""
-    if book.state["halted"] != "market_data_gap" or book.state["positions"] or book.state["pending"]:
+    if book.state["halted"] not in DATA_HALTS or book.state["pending"]:
         return False
     newest = []
     for asset in book.cfg.assets:
@@ -161,15 +162,24 @@ async def _recover_market_gap(book: Portfolio, feeds: dict, now_ms: int, mirror)
         return False
     if mirror:
         try:
-            if not await asyncio.to_thread(mirror.recover_transport_halt_if_flat, book):
+            if not await asyncio.to_thread(mirror.reconcile_market_recovery, book):
+                book.state.setdefault("market_data", {})["recovery"] = "broker_reconciliation_pending"
                 return False
         except Exception as exc:
+            book.state.setdefault("market_data", {})["recovery"] = str(exc)
             print(f"paper broker recovery deferred: {type(exc).__name__}: {exc}", flush=True)
             return False
+    before = len(book.state["positions"])
+    if not audit_open_positions(book, feeds, now_ms) or book.state["halted"] not in DATA_HALTS:
+        return False
+    if mirror and len(book.state["positions"]) != before:
+        # Persist and mirror a recovery exit before clearing the entry restriction.
+        return False
     book.state["halted"] = None
     book.state["events"].append({"ts": now_ms, "event": "market_data_gap_recovered",
                                  "latest_closed_bar": next(iter(book.state["last_bar"].values())),
-                                 "verified_bars_per_asset": 12, "broker_checked": bool(mirror)})
+                                 "verified_bars_per_asset": 12, "open_positions": len(book.state["positions"]),
+                                 "broker_checked": bool(mirror)})
     return True
 
 
@@ -267,19 +277,20 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                     if len(bars["t"]) < 120 or len(hours["t"]) < 108:
                         raise RuntimeError(f"insufficient closed candles for {asset}")
                     feeds[asset] = (bars, hours, raw)
-                newest = {asset: feed[0]["t"][-1] for asset, feed in feeds.items()}
-                if len(set(newest.values())) != 1 or now - min(newest.values()) > 2 * BAR_MS:
-                    book.state["halted"] = "stale_or_unsynchronized_market_data"
+                ready = await prepare_feeds(book, feeds, int(now))
                 failures = 0
-                if not book.state["last_bar"]:
+                if ready and (book.state["halted"] or any(
+                        now - (last + BAR_MS) > 60_000 for last in book.state["last_bar"].values())):
+                    book.state["pending"] = {}
+                if ready and not book.state["last_bar"]:
                     # First boot starts observing NOW, never invents fills in past candles.
                     for asset, (bars, _, _) in feeds.items():
                         book.state["last_bar"][asset] = bars["t"][-1]
                         book.state["marks"][asset] = bars["close"][-1]
                     book.state["curve"].append({"ts": dt.datetime.now(dt.timezone.utc).isoformat(),
                                                  "equity": book.equity()})
-                else:
-                    latest = max(bars["t"][-1] for bars, _, _ in feeds.values())
+                elif ready:
+                    latest = min(bars["t"][-1] for bars, _, _ in feeds.values())
                     for ts in range(min(book.state["last_bar"].values()) + BAR_MS, latest + 1, BAR_MS):
                         signals = []
                         pending_order = book.pending_assets()
@@ -288,21 +299,14 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                             bars, hours, _ = feeds[asset]
                             if ts <= book.state["last_bar"].get(asset, -1):
                                 continue
-                            try:
-                                i = bars["t"].index(ts)
-                            except ValueError:
-                                if book.state["halted"] != "market_data_gap":
-                                    book.state["events"].append({"ts": int(now), "event": "market_data_gap",
-                                                                 "asset": asset, "missing_bar": ts})
-                                book.state["halted"] = "market_data_gap"
-                                continue
-                            if ts + BAR_MS > now:
-                                continue
+                            i = bars["t"].index(ts)  # Entire common interval was verified before mutation.
                             bar = {k: bars[k][i] for k in ("open", "high", "low", "close")}
-                            book.on_bar(asset, bar, ts)
+                            quote = current_quote(feeds[asset][2], int(now))
+                            book.on_bar(asset, bar, ts, recovery_quote=(quote, int(now)))
                             sub = {k: bars[k][max(0, i - 160):i + 1] for k in ("t", "open", "high", "low", "close")}
                             signals.extend(signals_for_asset(asset, sub, hours, book.cfg))
-                        book.decide(signals, ts + BAR_MS)
+                        if ts == latest and 0 <= now - (ts + BAR_MS) <= 60_000:
+                            book.decide(signals, ts + BAR_MS)
                         if ts == latest and book.state["pending"]:
                             # A forming next bar supplies a fresh quote for every queued asset.
                             # Fill in global signal rank order so the risk budget is deterministic.
@@ -313,13 +317,14 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                                                             int(time.time() * 1000))
                                 else:
                                     book.state["pending"] = {}
-                                    book.state["halted"] = "missing_current_quote"
+                                    pause(book, "missing_current_quote")
                                     break
-                if await _recover_market_gap(book, feeds, int(now), mirror):
+                if ready and await _recover_market_gap(book, feeds, int(now), mirror):
                     print(json.dumps({"event": "market_data_gap_recovered",
                                       "latest_closed_bar": book.state["events"][-1]["latest_closed_bar"],
+                                      "open_positions": len(book.state["positions"]),
                                       "broker_checked": bool(mirror)}), flush=True)
-                if await _expand_universe(book, cfg, state_path, mirror, int(now)):
+                if ready and await _expand_universe(book, cfg, state_path, mirror, int(now)):
                     print(json.dumps({"event": "asset_universe_expanded",
                                       "added": list(book.state["events"][-1]["added"])}), flush=True)
                 await autotune(int(now))
@@ -335,7 +340,7 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
             except Exception as exc:
                 failures += 1
                 if failures >= 3:
-                    book.state["halted"] = "consecutive_data_errors"
+                    pause(book, "consecutive_data_errors")
                 book.state["events"].append({"ts": int(now), "event": "data_error", "error": type(exc).__name__})
                 baseline = cfg if book.cfg.assets == cfg.assets else dataclasses.replace(cfg, assets=book.cfg.assets)
                 _save(book, state_path, baseline)
