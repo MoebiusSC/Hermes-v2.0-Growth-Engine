@@ -184,6 +184,11 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
               if configured() and not once else None)
     meta = optimizer.initialise(book.state, int(time.time() * 1000))
     meta["enabled"] = enabled
+    if meta.get("research_intent"):
+        # A redeploy interrupted research. Its budget stays counted and the same
+        # candidate is retried; an unfinished run cannot become an approval.
+        meta.pop("research_intent")
+    meta["running"] = False
     task: asyncio.Task | None = None
 
     async def autotune(now_ms: int) -> None:
@@ -196,6 +201,11 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
             if verdict == "revert":
                 previous = active_change["previous_config"]
                 book.cfg = GrowthConfig(**{**previous, "assets": tuple(previous["assets"])})
+            meta["active_validation"] = (active_change.get("previous_validation") if verdict == "revert"
+                                         else {**active_change.get("validation", {}),
+                                               "paper": {"status": "OBSERVED", "days": optimizer.FORWARD_DAYS,
+                                                         "trades": len(book.state["trades"]) - active_change["trade_count"]},
+                                               "live_approved": False})
             optimizer.record(meta, {"event": verdict, "change": active_change["change"]}, now_ms)
             book.state["events"].append({"ts": now_ms, "event": f"optimizer_{verdict}",
                                          "change": active_change["change"]})
@@ -206,6 +216,12 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
             except Exception as exc:
                 result = {"accepted": False, "reason": f"research_error:{type(exc).__name__}"}
             task = None
+            meta.pop("research_intent", None)
+            validation = result.get("assessment", {}).get("validation", {})
+            if result.get("accepted") and (result.get("evaluated_config") != dataclasses.asdict(book.cfg)
+                    or not all(validation.get(gate, {}).get("status") == "PASS" for gate in
+                               ("leakage", "costs", "walk_forward", "dsr", "pbo", "bootstrap"))):
+                result = {**result, "accepted": False, "reason": "stale_config_or_missing_gate_evidence"}
             meta["candidate_index"] += 1
             meta["next_due_ms"] = now_ms + (optimizer.INTERVAL_MS if result["accepted"] else optimizer.RETRY_MS)
             if result["accepted"] and not (book.state["positions"] or book.state["pending"] or book.state["halted"]):
@@ -213,7 +229,9 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                 meta["active_change"] = {"previous_config": dataclasses.asdict(book.cfg),
                                          "change": result["change"], "applied_ms": now_ms,
                                          "trade_count": len(book.state["trades"]),
-                                         "equity_at_apply": book.equity()}
+                                         "equity_at_apply": book.equity(),
+                                         "previous_validation": meta.get("active_validation"),
+                                         "validation": result.get("assessment", {}).get("validation", {})}
                 book.cfg = trial
                 result["event"] = "applied"
             elif result["accepted"]:
@@ -228,8 +246,11 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
         if (task is None and meta.get("active_change") is None and
                 now_ms >= meta["next_due_ms"] and
                 not (book.state["positions"] or book.state["pending"] or book.state["halted"])):
+            total_trials = optimizer.reserve_trials(meta, book.cfg, meta["candidate_index"], now_ms)
+            _save(book, state_path, cfg if book.cfg.assets == cfg.assets else
+                  dataclasses.replace(cfg, assets=book.cfg.assets))
             task = asyncio.create_task(asyncio.to_thread(optimizer.evaluate, book.cfg,
-                                                         meta["candidate_index"]))
+                                                         meta["candidate_index"], total_trials))
             meta["running"] = True
         else:
             meta["running"] = task is not None

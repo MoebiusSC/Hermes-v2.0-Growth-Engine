@@ -50,17 +50,23 @@ class OptimizerTests(unittest.TestCase):
 
     def test_latest_holdout_and_history_coverage_gate_application(self):
         n = 143 * DAY_MS // BAR_MS
-        times = [i * BAR_MS for i in range(n)]
+        start = int(time.time() * 1000) // BAR_MS * BAR_MS - n * BAR_MS
+        times = [start + i * BAR_MS for i in range(n)]
         candles = {"t": times, "source": "test"}
-        hours = {"t": [i * 4 * BAR_MS for i in range(n // 4)], "source": "test"}
+        hours = {"t": [start + i * 4 * BAR_MS for i in range(n // 4)], "source": "test"}
         def history(asset, tf, days):
             return candles if tf == "15m" else hours
         rows = [{"candidate_trades": 8, "candidate_return": .03, "baseline_return": .01,
                  "stress_return": .01}] * 4
-        assessment = {"eligible_for_manual_review": True, "windows": rows}
+        evidence = {g: {"status": "PASS"} for g in
+                    ("leakage", "costs", "walk_forward", "dsr", "pbo", "bootstrap")}
+        assessment = {"eligible_for_manual_review": True, "windows": rows, "validation": evidence}
         with patch.object(backtest, "history", side_effect=history), patch(
                 "hermes_trading.growth_optimizer.assess", return_value=assessment):
             self.assertTrue(evaluate(self.cfg, 0)["accepted"])
+            evidence["dsr"]["status"] = "FAIL"
+            self.assertFalse(evaluate(self.cfg, 0)["accepted"])
+            evidence["dsr"]["status"] = "PASS"
             assessment["windows"] = rows[:3] + [{**rows[0], "candidate_return": .011}]
             self.assertFalse(evaluate(self.cfg, 0)["accepted"])
             candles["t"] = times[9 * DAY_MS // BAR_MS:]
@@ -95,7 +101,10 @@ class OptimizerTests(unittest.TestCase):
             meta["next_due_ms"] = 0
             _save(p, path, self.cfg)
             result = {"accepted": True, "reason": "passed",
-                      "change": {"field": "range_rsi", "from": 30., "to": 28.}}
+                      "change": {"field": "range_rsi", "from": 30., "to": 28.},
+                      "evaluated_config": dataclasses.asdict(self.cfg),
+                      "assessment": {"validation": {g: {"status": "PASS"} for g in
+                          ("leakage", "costs", "walk_forward", "dsr", "pbo", "bootstrap")}}}
             with patch.dict("os.environ", {"HERMES_AUTOTUNE": "on"}), patch(
                     "hermes_trading.adapters.price.ohlcv", side_effect=ohlcv), patch(
                     "hermes_trading.adapters.price.close", side_effect=close), patch(

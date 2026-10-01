@@ -139,7 +139,8 @@
       <div class="row"><span>Próxima evaluación</span><strong id="optimizer-next">—</strong></div>
       <div class="row"><span>Última decisión</span><strong id="optimizer-last">—</strong></div>
       <div class="row"><span>Parámetros activos</span><strong id="optimizer-alpha">—</strong></div>
-      <p class="note">Un candidato acotado por ciclo. Cuatro ventanas históricas de 30 días, costos duplicados y confirmación reciente. Riesgo y capital permanecen fijos. Los cambios se auditan y tienen una evaluación posterior en paper.</p>
+      <div class="row"><span>Ensayos acumulados</span><strong id="optimizer-trials">—</strong></div>
+      <p class="note">Un candidato predefinido por ciclo. Cuatro ventanas de 30 días, DSR, PBO y remuestreo por bloques; costos a 2× y 3×. La aprobación histórica inicia observación paper. Riesgo y capital permanecen fijos.</p>
     </div>
     <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Mismo período · retornos porcentuales</div><h3>Hermes vs. Hermes V2</h3></div></div>
       <p class="note">Abre <a href="https://hermes-trading-production-c90e.up.railway.app/api/state" target="_blank" rel="noopener noreferrer">el JSON del Hermes original</a> tras iniciar sesión allí; guárdalo y cárgalo aquí. El archivo se procesa en este navegador y no se envía al servidor.</p>
@@ -148,6 +149,12 @@
       <div class="table-wrap"><table><thead><tr><th>Motor</th><th>Retorno</th><th>Drawdown máx.</th><th>Muestras</th></tr></thead><tbody id="comparison-rows"></tbody></table></div>
       <p class="note">Las carteras, el capital, los activos y las reglas son distintos. Igualar fechas y porcentajes permite observar resultados, pero no demuestra cuál algoritmo es mejor.</p>
     </div>
+  </section>
+  <section class="card" style="margin-top:13px">
+    <div class="card-head"><div><div class="label" style="margin-bottom:6px">Evidencia cuantitativa</div><h3>Validación de estrategias</h3></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Estrategia / candidato</th><th>Estado</th><th>Leakage</th><th>Ventanas</th><th>DSR ≥95%</th><th>PBO ≤20%</th><th>Costos</th><th>Bloques</th><th>Paper</th></tr></thead><tbody id="validation-rows"></tbody></table></div>
+    <p class="note" id="validation-detail">Esperando evidencia.</p>
+    <p class="note">La validación del candidato evalúa la cartera completa. SUI no recibe una aprobación individual por esos resultados. PBO cubre la familia local de parámetros; los ensayos previos siguen contando para DSR. Paper previo no equivale a validación estadística ni autorización de capital real.</p>
   </section>
   <footer><span id="updated">Actualización: —</span><br>Simulación paper con velas de 15 min. Los stops se evalúan al cierre; este panel no representa protección del lado del exchange.</footer>
 </div>

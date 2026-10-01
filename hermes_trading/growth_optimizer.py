@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import time
 
 from .growth import BAR_MS, GrowthConfig
 from .growth_lab import assess
@@ -26,13 +27,18 @@ STEPS = (("range_rsi", -2), ("range_rsi", 2), ("trend_rsi", -2),
 
 
 def initialise(state: dict, now_ms: int) -> dict:
-    return state.setdefault("optimizer", {
+    meta = state.setdefault("optimizer", {
         "next_due_ms": now_ms + 60 * 60_000,
         "candidate_index": 0,
         "active_change": None,
         "last_decision": None,
         "history": [],
     })
+    # Lifetime count is separate from the bounded display history; never reset on restart.
+    meta.setdefault("trial_count", max(0, meta.get("candidate_index", 0)))
+    meta.setdefault("legacy_trial_count_is_lower_bound", bool(meta.get("candidate_index", 0)))
+    meta.setdefault("last_assessment", None)
+    return meta
 
 
 def candidate_config(cfg: GrowthConfig, index: int) -> tuple[GrowthConfig | None, dict]:
@@ -44,7 +50,39 @@ def candidate_config(cfg: GrowthConfig, index: int) -> tuple[GrowthConfig | None
     return (dataclasses.replace(cfg, **{field: new}) if lo <= new <= hi else None), change
 
 
-def evaluate(cfg: GrowthConfig, index: int) -> dict:
+def reference_cohort(cfg: GrowthConfig, trial: GrowthConfig) -> list[GrowthConfig]:
+    """Base, preregistered candidate, one nearby control; never choose the best of them.
+
+PBO diagnoses only this local family. Lifetime trial count also covers previous
+cycles, including rejected candidates and both stress replays.
+"""
+    changed = next((field for field in ALPHA_BOUNDS if getattr(cfg, field) != getattr(trial, field)), None)
+    controls = []
+    if changed:
+        opposite = 2 * getattr(cfg, changed) - getattr(trial, changed)
+        lo, hi = ALPHA_BOUNDS[changed]
+        if lo <= opposite <= hi:
+            controls.append(dataclasses.replace(cfg, **{changed: opposite}))
+    controls.extend(c for i in range(len(STEPS)) if (c := candidate_config(cfg, i)[0]) is not None)
+    control = next((c for c in controls if c not in (cfg, trial)), None)
+    return [cfg, trial] + ([control] if control else [])
+
+
+def reserve_trials(meta: dict, cfg: GrowthConfig, index: int, now_ms: int) -> int:
+    """Persist BEFORE research starts so crashes/timeouts do not erase attempts.
+
+Count cohort and two cost scenarios conservatively, even if data acquisition
+fails before completing the scheduled replays.
+"""
+    trial, change = candidate_config(cfg, index)
+    count = len(reference_cohort(cfg, trial)) + 2 if trial else 1
+    meta["trial_count"] = meta.get("trial_count", 0) + count
+    meta["research_intent"] = {"ts": now_ms, "index": index, "change": change,
+                                "reserved_trials": count, "total_trials": meta["trial_count"]}
+    return meta["trial_count"]
+
+
+def evaluate(cfg: GrowthConfig, index: int, n_trials: int | None = None) -> dict:
     """Fetch closed public candles and compare one candidate on the same portfolio/costs."""
     trial, change = candidate_config(cfg, index)
     if trial is None:
@@ -57,6 +95,9 @@ def evaluate(cfg: GrowthConfig, index: int) -> dict:
     if any(not candles[a]["t"] or not hourly[a]["t"] for a in cfg.assets):
         return {"accepted": False, "reason": "incomplete_history", "change": change}
     end = min(candles[a]["t"][-1] for a in cfg.assets)
+    latest = [candles[a]["t"][-1] for a in cfg.assets]
+    if max(latest) - min(latest) > BAR_MS or time.time() * 1000 - end > 2 * BAR_MS:
+        return {"accepted": False, "reason": "stale_or_unsynchronized_history", "change": change}
     earliest = end - (WINDOWS * WINDOW_DAYS + 15) * DAY_MS
     if any(candles[a]["t"][0] > earliest or hourly[a]["t"][0] > end -
            (WINDOWS * WINDOW_DAYS + 20) * DAY_MS or
@@ -66,14 +107,23 @@ def evaluate(cfg: GrowthConfig, index: int) -> dict:
     if any(any(b - a != BAR_MS for a, b in zip(candles[asset]["t"], candles[asset]["t"][1:]))
            for asset in cfg.assets):
         return {"accepted": False, "reason": "market_data_gap", "change": change}
-    result = assess(cfg, trial, candles, hourly, windows=WINDOWS, window_days=WINDOW_DAYS)
+    cohort = reference_cohort(cfg, trial)
+    try:
+        result = assess(cfg, trial, candles, hourly, windows=WINDOWS, window_days=WINDOW_DAYS,
+                        cohort=cohort, n_trials=max(n_trials or 0, len(cohort) + 2))
+    except ValueError as exc:
+        return {"accepted": False, "reason": str(exc), "change": change}
     last = result["windows"][-1]
     # Freshest window is a confirmation gate. A tiny advantage is indistinguishable from noise.
-    accepted = (result["eligible_for_manual_review"] and last["candidate_trades"] >= 5 and
+    validation = result.get("validation", {})
+    passed = all(validation.get(gate, {}).get("status") == "PASS" for gate in
+                 ("leakage", "costs", "walk_forward", "dsr", "pbo", "bootstrap"))
+    accepted = (passed and result["eligible_for_manual_review"] and last["candidate_trades"] >= 5 and
                 last["candidate_return"] - last["baseline_return"] >= 0.0025 and
                 last["candidate_return"] > 0 and last["stress_return"] > 0)
     return {"accepted": accepted, "reason": "passed" if accepted else "validation_failed",
             "change": change, "assessment": result,
+            "evaluated_config": dataclasses.asdict(cfg),
             "sources": {a: {"15m": candles[a].get("source"), "1h": hourly[a].get("source")}
                         for a in cfg.assets}}
 
@@ -83,6 +133,11 @@ def record(meta: dict, decision: dict, now_ms: int) -> None:
     meta["last_decision"] = entry
     meta.setdefault("history", []).append(entry)
     meta["history"] = meta["history"][-30:]
+    if "assessment" in decision or "accepted" in decision:
+        meta["last_assessment"] = {"ts": now_ms, "reason": decision.get("reason"),
+             "state": "PAPER_OBSERVATION" if decision.get("event") == "applied" else
+                      "VALIDATED" if decision.get("event") == "deferred" else "REJECTED",
+             "validation": decision.get("assessment", {}).get("validation", {})}
 
 
 def forward_verdict(meta: dict, state: dict, equity: float, now_ms: int) -> str | None:
