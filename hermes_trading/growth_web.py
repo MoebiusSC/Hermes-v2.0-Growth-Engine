@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .growth import GrowthConfig, Portfolio
+from .growth_validation import VERSION, dashboard_rows
 from .growth_run import _load_config, _paper, report
 from .manual_paper import MAX_BODY, ManualWallet, OrderError, QuoteError, quote as manual_quote
 from .alpaca_paper_bridge import (PaperAuto, PaperManual, BrokerError, configured, from_env)
@@ -64,6 +65,8 @@ def snapshot(path: Path) -> dict:
         "events": s["events"][-100:][::-1],
         "last_bar": s["last_bar"],
         "optimizer": s.get("optimizer", {"enabled": False}),
+        "validation": {"version": VERSION, "live_approved": False,
+                       "strategies": dashboard_rows(s.get("optimizer", {}))},
         "alpha": {key: getattr(cfg, key) for key in ("range_rsi", "trend_rsi", "target_r", "stop_atr")},
     }
 

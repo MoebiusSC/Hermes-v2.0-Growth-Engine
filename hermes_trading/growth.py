@@ -269,6 +269,9 @@ class Portfolio:
                             "entry": pos["entry"], "exit": price, "qty": qty, "pnl": pnl,
                             "pnl_pct": pnl / pos["equity_at_entry"], "reason": reason, "regime": pos["regime"],
                             "strategy": pos.get("strategy", "hermes_core"),
+                            "signal_time": pos.get("signal_time"), "decision_time": pos.get("decision_time"),
+                            "order_time": pos.get("order_time"), "fill_time": pos.get("fill_time"),
+                            "fill_price": pos.get("fill_price", pos["entry"]),
                             "target_r": pos.get("target_r", cfg.target_r),
                             "risk_amount": pos.get("risk_amount")})
         del s["positions"][asset]
@@ -312,6 +315,8 @@ class Portfolio:
                                  "stop": entry - dist, "target": entry + target_r * dist,
                                  "opened_ms": ts, "equity_at_entry": equity, "regime": signal["regime"],
                                  "strategy": strategy, "target_r": target_r,
+                                 "signal_time": signal["decision_ms"], "decision_time": signal["decision_ms"],
+                                 "order_time": ts, "fill_time": ts, "fill_price": entry,
                                  "risk_amount": risk_amount}
         s["events"].append({"ts": ts, "event": "entry", "asset": asset, "notional": notional,
                             "risk_amount": risk_amount, "strategy": strategy})
@@ -334,7 +339,7 @@ class Portfolio:
             s["halted"] = "market_data_gap"
         s["last_bar"][asset] = ts
         pending = s["pending"].pop(asset, None)
-        if pending and pending["decision_ms"] <= ts and not s["halted"]:
+        if pending and pending["decision_ms"] == ts and not s["halted"]:
             self._open(ts, bar, pending)
         pos = s["positions"].get(asset)
         if pos:
@@ -375,7 +380,7 @@ class Portfolio:
         signal = self.state["pending"].pop(asset, None)
         if signal is None:
             return
-        if ts - signal["decision_ms"] > 60_000:
+        if not 0 <= ts - signal["decision_ms"] <= 60_000:
             self.state["events"].append({"ts": ts, "event": "skip", "asset": asset,
                                          "reason": "late_paper_fill"})
             return
@@ -393,6 +398,23 @@ def replay(cfg: GrowthConfig, candles: Mapping[str, dict], hourly: Mapping[str, 
     indices = {asset: {int(t): i for i, t in enumerate(candles[asset]["t"])} for asset in cfg.assets}
     for ts in sorted(by_time):
         signals = []
+        # Opening prices are available together. Fill ALL ranked entries before
+        # consuming any asset's high/low/close; otherwise a later asset's size
+        # can use an earlier asset's future closing price in the same bar.
+        complete = all(ts in indices[a] for a in cfg.assets)
+        if complete and not book.state["halted"]:
+            if any(ts - last != BAR_MS for last in book.state["last_bar"].values()):
+                book.state["pending"] = {}
+                book.state["halted"] = "market_data_gap"
+            else:
+                book.state["marks"].update({a: float(candles[a]["open"][indices[a][ts]]) for a in cfg.assets})
+                for asset in book.pending_assets():
+                    pending = book.state["pending"].pop(asset)
+                    if pending["decision_ms"] == ts:
+                        book._open(ts, {"open": book.state["marks"][asset]}, pending)
+        elif not complete:
+            book.state["pending"] = {}
+            book.state["halted"] = "market_data_gap"
         pending_order = book.pending_assets()
         ordered_assets = pending_order + [a for a in cfg.assets if a not in pending_order]
         for asset in ordered_assets:

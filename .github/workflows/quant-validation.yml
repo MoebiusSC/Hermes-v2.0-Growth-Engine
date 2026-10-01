@@ -1,0 +1,31 @@
+name: Quant Validation Benchmark
+on:
+  push:
+    branches: [feature/quant-validation]
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e .
+      - name: Validate one preregistered candidate on common public history
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from hermes_trading.growth_run import _load_config
+          from hermes_trading.growth_optimizer import evaluate
+          cfg = _load_config(Path('growth.json'))
+          result = evaluate(cfg, 0, 5)
+          Path('quant_validation_120d.json').write_text(json.dumps(result, indent=2))
+          print(json.dumps(result, indent=2), flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quant-validation-120d
+          path: quant_validation_120d.json

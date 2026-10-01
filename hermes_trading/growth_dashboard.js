@@ -119,6 +119,26 @@ function renderStrategies(data) {
   }
 }
 
+function renderValidation(data) {
+  const tbody=$('validation-rows');tbody.replaceChildren();
+  const statuses={PASS:'Pasa',FAIL:'Rechaza',INSUFFICIENT:'Muestra insuficiente',PENDING:'Pendiente',OBSERVED:'Observado'};
+  const states={PAPER_LEGACY:'Paper · validación pendiente',PAPER_OBSERVATION:'Observación paper',
+    VALIDATED:'Histórico validado · aplicación pendiente',REJECTED:'Rechazado',CANDIDATE:'Candidato'};
+  const status=gate=>gate?.status?(statuses[gate.status]||gate.status):'Sin evidencia';
+  const probability=gate=>Number.isFinite(gate?.probability)?`${pct(gate.probability)} · ${status(gate)}`:status(gate);
+  for(const item of data.validation?.strategies||[]) {
+    const v=item.validation||{},w=v.walk_forward;
+    const values=[item.strategy,states[item.state]||item.state,status(v.leakage),
+      w?`${w.positive_folds}/${w.folds} positivas · ${status(w)}`:'Sin evidencia',
+      probability(v.dsr),probability(v.pbo),status(v.costs),status(v.bootstrap),status(v.paper)];
+    const row=tbody.insertRow();values.forEach(value=>row.insertCell().textContent=value);
+  }
+  const latest=data.optimizer?.last_assessment, v=latest?.validation;
+  $('validation-detail').textContent=v?.version?
+    `${v.version} · ${v.start} → ${v.end} · ${v.dsr?.n_obs??'—'} días · motivo: ${latest.reason||'—'}`:
+    'Las configuraciones existentes siguen en paper. Aún no hay una evaluación con los nuevos controles.';
+}
+
 function renderRows(data) {
   const tbody=$('trade-rows');tbody.replaceChildren();
   const trades=Array.isArray(data.trades)?data.trades:[];
@@ -171,12 +191,14 @@ function render(data) {
   $('optimizer-next').textContent=opt.next_due_ms?`${utc(opt.next_due_ms)} UTC`:'—';
   $('optimizer-last').textContent=opt.last_decision?`${opt.last_decision.event||'evaluación'} · ${opt.last_decision.reason||opt.last_decision.change?.field||'—'}`:'Aún sin evaluación';
   $('optimizer-alpha').textContent=data.alpha?`RSI rango ${data.alpha.range_rsi} · RSI tendencia ${data.alpha.trend_rsi} · objetivo ${data.alpha.target_r}R · stop ${data.alpha.stop_atr} ATR`:'—';
+  $('optimizer-trials').textContent=String(opt.trial_count??0)+(opt.legacy_trial_count_is_lower_bound?' · historial previo parcial':'');
   currentV2=data;
   const sections=[
     ['comparación',()=>renderComparison()],
     ['curva',()=>drawCurve(Array.isArray(data.curve)?data.curve:[])],
     ['activos',()=>renderAssets(data)],
     ['estrategias',()=>renderStrategies(data)],
+    ['validación',()=>renderValidation(data)],
     ['historial',()=>renderRows(data)],
   ];
   const failures=[];
