@@ -16,6 +16,7 @@ from .growth_validation import VERSION, dashboard_rows, live_readiness
 from .growth_run import _load_config, _paper, report
 from .manual_paper import MAX_BODY, ManualWallet, OrderError, QuoteError, quote as manual_quote
 from .alpaca_paper_bridge import (PaperAuto, PaperManual, BrokerError, configured, from_env)
+from .exchange_benchmark import snapshot as exchange_benchmark_snapshot
 
 HERE = Path(__file__).resolve().parent
 STATE = Path(os.environ.get("HERMES_GROWTH_STATE", "growth_state/account.json"))
@@ -60,6 +61,7 @@ def snapshot(path: Path) -> dict:
         "assets": cfg.assets,
         "metrics": metrics,
         "live_readiness": live_readiness(s, metrics, cfg.assets, broker_state),
+        "exchange_benchmark": exchange_benchmark_snapshot(path.with_name("exchange_benchmark.json")),
         "positions": [{k: position.get(k) for k in ("asset", "entry", "qty", "stop", "target", "regime",
                                                        "strategy", "target_r", "opened_ms", "risk_amount")}
                       for position in positions],

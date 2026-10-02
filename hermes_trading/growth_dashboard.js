@@ -134,6 +134,47 @@ function renderAssetPerformance(data) {
   }
 }
 
+function renderExchangeBenchmark(data) {
+  const b=data.exchange_benchmark||{}, venueBody=$('benchmark-venue-rows'), assetBody=$('benchmark-asset-rows');
+  venueBody.replaceChildren();assetBody.replaceChildren();
+  const ready=Boolean(b.ready);
+  const badge=$('exchange-benchmark-status');badge.textContent=ready?'Midiendo':'Esperando';
+  badge.className=`state-pill ${ready?'active':''}`;
+  $('benchmark-samples').textContent=String(b.sample_cycles??0);
+  $('benchmark-updated').textContent=b.last_sample_ms?`${utc(b.last_sample_ms)} UTC`:'—';
+  $('benchmark-note').textContent=(b.note||'')+(b.method?` Método: ${b.method}`:'');
+  const venues=b.venues||{};
+  if(!Object.keys(venues).length){
+    const row=venueBody.insertRow(),cell=row.insertCell();cell.colSpan=8;cell.className='empty';cell.textContent=b.message||'Esperando primera muestra pública';
+  }
+  const fmtCost=(item,key)=>{
+    const s=item?.sizes?.[key],bps=Number(s?.avg_roundtrip_bps),usd=Number(s?.avg_roundtrip_usd);
+    return Number.isFinite(bps)&&Number.isFinite(usd)?`${bps.toFixed(2)} bps · ${usd.toFixed(4)}`:'—';
+  };
+  for(const [venue,item] of Object.entries(venues)){
+    const fee=item.fees||{}, row=venueBody.insertRow(), w=Number(item.sizes?.['25']?.win_share);
+    const feeText=Number.isFinite(Number(fee.maker_bps))?`${number(fee.maker_bps)} / ${number(fee.taker_bps)} bps`:'—';
+    const values=[venue,feeText,pct(item.availability??0),
+      Number.isFinite(Number(item.avg_spread_bps))?`${Number(item.avg_spread_bps).toFixed(2)} bps`:'—',
+      fmtCost(item,'25'),fmtCost(item,'100'),fmtCost(item,'500'),Number.isFinite(w)?pct(w):'—'];
+    values.forEach((value,index)=>{const cell=row.insertCell();cell.textContent=value;if(index===7&&Number.isFinite(w)&&w>=.5)cell.className='benchmark-best';});
+  }
+  const assets=b.assets||{};
+  if(!Object.keys(assets).length){
+    const row=assetBody.insertRow(),cell=row.insertCell();cell.colSpan=4;cell.className='empty';cell.textContent='Sin datos por moneda todavía';
+  }
+  const bestText=(item,key)=>{
+    const x=item?.best?.[key];
+    return x?`${x.venue} · ${Number(x.roundtrip_bps).toFixed(2)} bps · ${Number(x.roundtrip_usd).toFixed(4)}`:'—';
+  };
+  for(const [asset,item] of Object.entries(assets)){
+    const row=assetBody.insertRow();
+    [asset.replace('/USDT',''),bestText(item,'25'),bestText(item,'100'),bestText(item,'500')].forEach((value,index)=>{
+      const cell=row.insertCell();cell.textContent=value;if(index>0&&value!=='—')cell.className='benchmark-best';
+    });
+  }
+}
+
 function renderStrategies(data) {
   const tbody=$('strategy-rows');tbody.replaceChildren();
   const rows=data.metrics?.strategy_metrics||{};
@@ -264,6 +305,7 @@ function render(data) {
     ['curva',()=>drawCurve(Array.isArray(data.curve)?data.curve:[])],
     ['activos',()=>renderAssets(data)],
     ['resultado por moneda',()=>renderAssetPerformance(data)],
+    ['exchange benchmark',()=>renderExchangeBenchmark(data)],
     ['estrategias',()=>renderStrategies(data)],
     ['preparación live',()=>renderReadiness(data)],
     ['validación',()=>renderValidation(data)],

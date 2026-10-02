@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .growth import BAR_MS, GrowthConfig, Portfolio, replay, signals_for_asset
 from .growth_market import DATA_HALTS, audit_open_positions, current_quote, pause, prepare_feeds
+from .exchange_benchmark import sample_cycle as sample_exchange_costs
 from .score import metrics
 from .storage import atomic_write
 from .strategy import closed
@@ -283,6 +284,7 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
             meta["running"] = True
         else:
             meta["running"] = task is not None
+    benchmark_path = state_path.with_name("exchange_benchmark.json")
     try:
         failures = 0
         while True:
@@ -364,6 +366,11 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                 baseline = cfg if book.cfg.assets == cfg.assets else dataclasses.replace(cfg, assets=book.cfg.assets)
                 _save(book, state_path, baseline)
                 print(f"paper data error ({failures}): {type(exc).__name__}: {exc}", flush=True)
+            try:
+                await sample_exchange_costs(benchmark_path, book.cfg.assets, int(time.time() * 1000))
+            except Exception as exc:
+                # The passive venue benchmark must never pause or influence the strategy.
+                print(f"exchange benchmark deferred: {type(exc).__name__}: {exc}", flush=True)
             if once:
                 return
             await asyncio.sleep(60)

@@ -77,6 +77,9 @@
     .gate-pass { background:#0d3530; color:var(--teal) }.gate-pending { background:#382f1d; color:var(--amber) }
     .gate-fail { background:#3a2026; color:var(--red) }.gate-unmeasured { background:#182632; color:var(--muted) }
     .readiness-headline { font-size:21px; font-weight:650; margin:8px 0 4px }
+    .benchmark-summary { display:flex; gap:16px; flex-wrap:wrap; margin:8px 0 15px }
+    .benchmark-summary strong { color:var(--ink) }
+    .benchmark-best { color:var(--teal); font-weight:700 }
     a { color:var(--teal) }
     footer { color:#6f8795; font-size:11px; margin-top:23px; line-height:1.6 }
     @media(max-width:900px){.metrics{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.asset-performance-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.readiness-grid{grid-template-columns:1fr}}
@@ -117,6 +120,15 @@
     <div class="card-head"><div><div class="label" style="margin-bottom:6px">P/L realizado por activo</div><h3>Resultado por moneda</h3></div><span class="small">Histórico completo</span></div>
     <p class="note">Cada panel resume únicamente operaciones cerradas por el motor automático. «Última operación» muestra la ganancia o pérdida del cierre más reciente; «Acumulado» suma todo el P/L realizado de esa moneda desde el inicio del estado persistente.</p>
     <div class="asset-performance-grid" id="asset-performance"></div>
+  </section>
+  <section class="card" style="margin-bottom:13px" aria-label="Comparación de costos públicos entre exchanges">
+    <div class="card-head"><div><div class="label" style="margin-bottom:6px">Observación paralela · sin órdenes</div><h3>Exchange Cost Benchmark</h3></div><span class="state-pill" id="exchange-benchmark-status">Esperando</span></div>
+    <p class="note">Cada 15 minutos consulta libros spot públicos de Binance, OKX, Bybit y Kraken. Estima un costo conservador taker→taker que combina comisión asumida, spread y profundidad visible para 25, 100 y 500 USDT. No utiliza claves ni afecta las decisiones de Hermes.</p>
+    <div class="benchmark-summary"><span class="small">Muestras: <strong id="benchmark-samples">—</strong></span><span class="small">Última: <strong id="benchmark-updated">—</strong></span><span class="small">Método: <strong>fee + spread + impacto de libro</strong></span></div>
+    <div class="table-wrap"><table><thead><tr><th>Exchange</th><th>Maker / Taker</th><th>Disponibilidad</th><th>Spread prom.</th><th>RT 25 USDT</th><th>RT 100 USDT</th><th>RT 500 USDT</th><th>Más barato @25</th></tr></thead><tbody id="benchmark-venue-rows"></tbody></table></div>
+    <h3 style="margin-top:18px">Mejor costo actual por moneda</h3>
+    <div class="table-wrap"><table><thead><tr><th>Moneda</th><th>25 USDT</th><th>100 USDT</th><th>500 USDT</th></tr></thead><tbody id="benchmark-asset-rows"></tbody></table></div>
+    <p class="note" id="benchmark-note">Las tarifas son supuestos configurables y deben verificarse contra la cuenta real antes de activar live.</p>
   </section>
   <section class="card" style="margin-bottom:13px" aria-label="Comparación de estrategias automáticas">
     <div class="card-head"><div><div class="label" style="margin-bottom:6px">Atribución de rendimiento</div><h3>Hermes Core vs. réplica SUI</h3></div><span class="small">Misma cuenta · P/L realizado</span></div>
