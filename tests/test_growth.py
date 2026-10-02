@@ -163,13 +163,22 @@ class GrowthTests(unittest.TestCase):
             {"ts": "2026-01-01T00:00:00+00:00", "equity": 50.0},
             {"ts": "2026-01-02T00:00:00+00:00", "equity": 52.5},
         ]
-        result = report(p)["strategy_metrics"]
+        report_data = report(p)
+        result = report_data["strategy_metrics"]
         self.assertEqual(result["hermes_core"]["trades"], 2)
         self.assertAlmostEqual(result["hermes_core"]["return"], 0.01)
         self.assertEqual(result["hermes_core"]["profit_factor"], 2.0)
         self.assertEqual(result["sui_ema_26_55"]["trades"], 1)
         self.assertAlmostEqual(result["sui_ema_26_55"]["return"], 0.04)
         self.assertEqual(result["sui_ema_26_55"]["win_rate"], 1.0)
+
+        by_asset = report_data["asset_metrics"]
+        self.assertEqual(by_asset["BTC/USDT"]["trades"], 2)
+        self.assertEqual(by_asset["BTC/USDT"]["pnl"], 0.5)
+        self.assertEqual(by_asset["BTC/USDT"]["last_pnl"], -0.5)
+        self.assertEqual(by_asset["BTC/USDT"]["last_closed_ms"], 2)
+        self.assertEqual(by_asset["SUI/USDT"]["pnl"], 2.0)
+        self.assertEqual(by_asset["ETH/USDT"], {"trades": 0, "pnl": 0, "last_pnl": None, "last_closed_ms": None})
 
     def test_legacy_single_position_state_migrates_without_reset(self):
         legacy_cfg = dataclasses.asdict(self.cfg)

@@ -42,6 +42,23 @@ def _strategy_metrics(trades: list[dict], capital: float) -> dict:
     return result
 
 
+def _asset_metrics(trades: list[dict], assets: tuple[str, ...]) -> dict:
+    """Historical realised P/L attribution for each configured asset."""
+    result = {}
+    for asset in assets:
+        rows = sorted((t for t in trades if t.get("asset") == asset),
+                      key=lambda t: int(t.get("closed_ms", 0)))
+        total = sum(float(t.get("pnl", 0.0)) for t in rows)
+        last = rows[-1] if rows else None
+        result[asset] = {
+            "trades": len(rows),
+            "pnl": round(total, 6),
+            "last_pnl": round(float(last.get("pnl", 0.0)), 6) if last else None,
+            "last_closed_ms": int(last["closed_ms"]) if last and last.get("closed_ms") is not None else None,
+        }
+    return result
+
+
 def report(book: Portfolio) -> dict:
     s = book.state
     trades, curve = s["trades"], s["curve"]
@@ -49,10 +66,12 @@ def report(book: Portfolio) -> dict:
     wins = sum(t["pnl"] for t in trades if t["pnl"] > 0)
     losses = -sum(t["pnl"] for t in trades if t["pnl"] < 0)
     by_strategy = _strategy_metrics(trades, book.cfg.capital)
+    by_asset = _asset_metrics(trades, book.cfg.assets)
     return {**m, "equity": round(book.equity(), 4), "cash": round(s["cash"], 4),
             "profit_factor": round(wins / losses, 3) if losses else None,
-            "halted": s["halted"], "market_data": s.get("market_data"), "trades_by_asset": {a: sum(t["asset"] == a for t in trades)
-                                                      for a in book.cfg.assets},
+            "halted": s["halted"], "market_data": s.get("market_data"),
+            "trades_by_asset": {a: row["trades"] for a, row in by_asset.items()},
+            "asset_metrics": by_asset,
             "trades_by_strategy": {name: row["trades"] for name, row in by_strategy.items()},
             "strategy_metrics": by_strategy, **book.risk_snapshot()}
 

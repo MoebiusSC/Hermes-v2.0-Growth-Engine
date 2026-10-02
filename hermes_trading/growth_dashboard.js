@@ -3,6 +3,7 @@ const money = value => Number.isFinite(Number(value)) ? `${Number(value).toFixed
 const pct = value => Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(2)}%` : '—';
 const utc = ms => new Date(ms).toLocaleString('es-BO', {timeZone:'UTC',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
 const number = value => Number.isFinite(Number(value)) ? Number(value).toLocaleString('es-BO',{maximumFractionDigits:4}) : '—';
+const pnlMoney = value => Number.isFinite(Number(value)) ? `${Number(value)>=0?'+':''}${Number(value).toFixed(4)} USDT` : '—';
 let originalExport=null, currentV2=null;
 
 function series(points, valueOf) {
@@ -99,6 +100,37 @@ function renderAssets(data) {
     row.insertCell().textContent=active?number(pos.qty):'—';
     const bar=data.last_bar?.[asset];row.insertCell().textContent=Number.isFinite(bar)?`${utc(bar)} UTC`:'Sin datos';
     row.insertCell().textContent=String(data.metrics?.trades_by_asset?.[asset]??0);
+  }
+}
+
+function renderAssetPerformance(data) {
+  const container=$('asset-performance');container.replaceChildren();
+  const assets=Array.isArray(data.assets)?data.assets:[];
+  const metrics=data.metrics?.asset_metrics||{};
+  for (const asset of assets) {
+    const item=metrics[asset]||{trades:0,pnl:0,last_pnl:null,last_closed_ms:null};
+    const last=Number(item.last_pnl), total=Number(item.pnl??0), hasLast=Number.isFinite(last)&&Number(item.trades)>0;
+    const card=document.createElement('article');card.className='asset-performance-card';
+    const head=document.createElement('div');head.className='asset-performance-head';
+    const symbol=document.createElement('div');symbol.className='asset-performance-symbol';symbol.textContent=asset.replace('/USDT','');
+    const count=document.createElement('span');count.className='state-pill';count.textContent=`${item.trades??0} cierres`;
+    head.append(symbol,count);
+
+    const result=document.createElement('div');result.className='asset-performance-result';
+    result.textContent=hasLast?pnlMoney(last):'Sin operaciones cerradas';
+    if (hasLast) result.classList.add(last>=0?'positive':'negative');
+
+    const meta=document.createElement('div');meta.className='asset-performance-meta';
+    const totalRow=document.createElement('div');
+    const totalLabel=document.createElement('span');totalLabel.textContent='Acumulado';
+    const totalValue=document.createElement('strong');totalValue.textContent=pnlMoney(total);
+    totalValue.className=total>=0?'positive':'negative';totalRow.append(totalLabel,totalValue);
+    const dateRow=document.createElement('div');
+    const dateLabel=document.createElement('span');dateLabel.textContent='Último cierre';
+    const dateValue=document.createElement('strong');dateValue.textContent=Number.isFinite(Number(item.last_closed_ms))?`${utc(Number(item.last_closed_ms))} UTC`:'—';
+    dateRow.append(dateLabel,dateValue);
+    meta.append(totalRow,dateRow);
+    card.append(head,result,meta);container.append(card);
   }
 }
 
@@ -201,6 +233,7 @@ function render(data) {
     ['comparación',()=>renderComparison()],
     ['curva',()=>drawCurve(Array.isArray(data.curve)?data.curve:[])],
     ['activos',()=>renderAssets(data)],
+    ['resultado por moneda',()=>renderAssetPerformance(data)],
     ['estrategias',()=>renderStrategies(data)],
     ['validación',()=>renderValidation(data)],
     ['historial',()=>renderRows(data)],

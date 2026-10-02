@@ -59,10 +59,19 @@
     .manual-summary { display:flex; gap:18px; flex-wrap:wrap; margin:12px 0 }
     .manual-summary strong { color:var(--ink) }
     .manual-message { min-height:20px; margin-top:10px }
+    .asset-performance-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:13px }
+    .asset-performance-card { background:#0b1822; border:1px solid var(--line); border-radius:12px; padding:15px; min-width:0 }
+    .asset-performance-head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:13px }
+    .asset-performance-symbol { font-size:15px; font-weight:700; letter-spacing:-.02em }
+    .asset-performance-result { font-size:22px; font-weight:650; font-variant-numeric:tabular-nums; margin-bottom:10px }
+    .asset-performance-meta { display:grid; gap:7px; font-size:12px }
+    .asset-performance-meta div { display:flex; justify-content:space-between; gap:12px; color:var(--muted) }
+    .asset-performance-meta strong { color:var(--ink); font-weight:600; font-variant-numeric:tabular-nums; text-align:right }
     a { color:var(--teal) }
     footer { color:#6f8795; font-size:11px; margin-top:23px; line-height:1.6 }
-    @media(max-width:900px){.metrics{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}
+    @media(max-width:900px){.metrics{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.asset-performance-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:700px){.manual-form{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:620px){.asset-performance-grid{grid-template-columns:1fr}}
     @media(max-width:530px){.shell{padding:20px 14px 40px}.metrics{gap:9px}.card{padding:16px}.value{font-size:23px}h2{font-size:26px}}
   </style>
   <script src="/app.js" defer></script>
@@ -93,6 +102,11 @@
     <div class="card-head"><div><div class="label" style="margin-bottom:6px">Universo automático</div><h3>Monedas evaluadas</h3></div><span class="small" id="asset-count">—</span></div>
     <p class="note">Hasta 3 posiciones del motor pueden estar abiertas simultáneamente, siempre dentro del riesgo global y de la exposición total. «Sin operación» indica que el bot no mantiene una posición en esa moneda.</p>
     <div class="table-wrap"><table><thead><tr><th>Moneda</th><th>Operación activa</th><th>Unidades abiertas</th><th>Última vela (inicio UTC)</th><th>Operaciones cerradas</th></tr></thead><tbody id="asset-rows"></tbody></table></div>
+  </section>
+  <section class="card" style="margin-bottom:13px" aria-label="Resultado realizado por moneda">
+    <div class="card-head"><div><div class="label" style="margin-bottom:6px">P/L realizado por activo</div><h3>Resultado por moneda</h3></div><span class="small">Histórico completo</span></div>
+    <p class="note">Cada panel resume únicamente operaciones cerradas por el motor automático. «Última operación» muestra la ganancia o pérdida del cierre más reciente; «Acumulado» suma todo el P/L realizado de esa moneda desde el inicio del estado persistente.</p>
+    <div class="asset-performance-grid" id="asset-performance"></div>
   </section>
   <section class="card" style="margin-bottom:13px" aria-label="Comparación de estrategias automáticas">
     <div class="card-head"><div><div class="label" style="margin-bottom:6px">Atribución de rendimiento</div><h3>Hermes Core vs. réplica SUI</h3></div><span class="small">Misma cuenta · P/L realizado</span></div>
