@@ -150,9 +150,14 @@ class PaperBridgeTests(unittest.TestCase):
             book.state["events"].append({"ts":now,"event":"exit","asset":"BTC/USDT"})
             mirror.sync(book)
             self.assertEqual(api.posts,2)
-            self.assertEqual(mirror.load()["cursor"],2)
+            state=mirror.load()
+            self.assertEqual(state["cursor"],2)
             self.assertFalse(api.holdings)
-            self.assertIsNone(mirror.load()["halted_auto"])
+            self.assertIsNone(state["halted_auto"])
+            self.assertEqual(state["auto_telemetry"]["filled_orders"],2)
+            self.assertEqual(state["auto_telemetry"]["duplicate_client_ids"],0)
+            self.assertEqual(state["auto_telemetry"]["reconciliation_failures"],0)
+            self.assertGreaterEqual(state["auto_telemetry"]["reconciliation_checks"],2)
 
     def test_transport_warning_clears_only_after_broker_reconciliation(self):
         api=FakeAPI("paper")

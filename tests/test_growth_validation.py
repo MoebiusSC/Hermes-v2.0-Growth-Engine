@@ -14,7 +14,7 @@ from hermes_trading.growth import BAR_MS, HOUR_MS, GrowthConfig, Portfolio, repl
 from hermes_trading.growth_lab import _settle, assess, validate_history
 from hermes_trading.growth_optimizer import initialise, record, reserve_trials
 from hermes_trading.growth_validation import (DAY_MS, block_stress, daily_returns,
-    deflated_sharpe, effective_observations, probability_overfitting)
+    deflated_sharpe, effective_observations, live_readiness, probability_overfitting)
 from hermes_trading.growth_run import _save, _restore
 from hermes_trading.growth_web import snapshot
 
@@ -90,6 +90,38 @@ class ValidationTests(unittest.TestCase):
             self.assertFalse(payload['validation']['live_approved'])
             self.assertEqual(payload['validation']['strategies'][0]['state'],'PAPER_LEGACY')
             self.assertEqual(json.loads(path.read_text())['state']['cash'],50)
+
+    def test_live_readiness_requires_evidence_paper_and_operational_telemetry(self):
+        assets=('BTC/USDT','ETH/USDT')
+        state=Portfolio(dataclasses.replace(GrowthConfig(),assets=assets)).state
+        start=dt.datetime(2026,1,1,tzinfo=dt.timezone.utc)
+        state['curve']=[
+            {'ts':start.isoformat(),'equity':50.0},
+            {'ts':(start+dt.timedelta(days=90)).isoformat(),'equity':51.0},
+        ]
+        state['trades']=[
+            {'asset':assets[i%2],'pnl':1.0 if i%3 else -0.5,'pnl_pct':.01,'closed_ms':i+1}
+            for i in range(200)
+        ]
+        passed={k:{'status':'PASS'} for k in ('leakage','walk_forward','costs','bootstrap')}
+        passed['dsr']={'status':'PASS','probability':.97}
+        passed['pbo']={'status':'PASS','probability':.1}
+        state['optimizer']={'active_validation':passed}
+        state['market_data']={'status':'ready'}
+        broker={'cursor':0,'pending':None,'halted_auto':None,
+                'auto_telemetry':{'since':1,'filled_orders':30,'reconciliation_checks':40,
+                                  'reconciliation_failures':0,'duplicate_client_ids':0}}
+        metrics={'max_drawdown':.05}
+        # Cursor must cover the full event ledger.
+        broker['cursor']=len(state['events'])
+        result=live_readiness(state,metrics,assets,broker)
+        self.assertTrue(result['ready'])
+        self.assertEqual(result['status'],'MICRO_LIVE_READY')
+        broker.pop('auto_telemetry')
+        blocked=live_readiness(state,metrics,assets,broker)
+        self.assertFalse(blocked['ready'])
+        telemetry=[g for s in blocked['sections'] for g in s['gates'] if g['key']=='broker_telemetry'][0]
+        self.assertEqual(telemetry['status'],'UNMEASURED')
 
     def test_next_open_sizes_do_not_use_another_assets_future_close(self):
         cfg = dataclasses.replace(GrowthConfig(), assets=('BTC/USDT','ETH/USDT'),

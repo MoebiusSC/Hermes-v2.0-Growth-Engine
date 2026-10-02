@@ -20,6 +20,138 @@ MIN_DAYS = 90
 DSR_THRESHOLD = 0.95
 PBO_THRESHOLD = 0.20
 
+LIVE_PAPER_DAYS = 90
+LIVE_MIN_TRADES = 200
+LIVE_MIN_TRADES_PER_ASSET = 20
+LIVE_MIN_PROFIT_FACTOR = 1.25
+LIVE_MAX_DRAWDOWN = 0.08
+LIVE_MIN_BROKER_FILLS = 30
+
+
+def _readiness_gate(key: str, label: str, status: str, value, target: str, detail: str = "") -> dict:
+    return {"key": key, "label": label, "status": status, "value": value, "target": target, "detail": detail}
+
+
+def _active_validation(meta: dict) -> dict:
+    active = meta.get("active_change") or {}
+    return active.get("validation") or meta.get("active_validation") or {}
+
+
+def live_readiness(state: dict, metrics: dict, assets: tuple[str, ...],
+                   broker_state: dict | None = None) -> dict:
+    """Deterministic, display-only gates for considering a future micro-live pilot.
+
+    This never enables live trading. Missing operational telemetry blocks readiness rather
+    than being treated as success.
+    """
+    evidence = _active_validation(state.get("optimizer", {}))
+    evidence_gates = []
+    labels = {
+        "leakage": "Sin leakage temporal",
+        "walk_forward": "Walk-forward",
+        "dsr": "DSR ≥ 95%",
+        "pbo": "PBO ≤ 20%",
+        "costs": "Costos estresados",
+        "bootstrap": "Bootstrap por bloques",
+    }
+    for key in ("leakage", "walk_forward", "dsr", "pbo", "costs", "bootstrap"):
+        raw = evidence.get(key, {})
+        raw_status = raw.get("status")
+        status = "PASS" if raw_status == "PASS" else "FAIL" if raw_status == "FAIL" else "PENDING"
+        value = raw_status or "Sin evidencia activa"
+        if key in ("dsr", "pbo") and raw.get("probability") is not None:
+            value = round(float(raw["probability"]), 6)
+        evidence_gates.append(_readiness_gate(key, labels[key], status, value,
+            "PASS" if key not in ("dsr", "pbo") else ("≥ 0.95" if key == "dsr" else "≤ 0.20")))
+
+    curve = state.get("curve") or []
+    paper_days = 0.0
+    if len(curve) >= 2:
+        try:
+            start = dt.datetime.fromisoformat(curve[0]["ts"])
+            end = dt.datetime.fromisoformat(curve[-1]["ts"])
+            paper_days = max(0.0, (end - start).total_seconds() / 86400)
+        except (KeyError, TypeError, ValueError):
+            paper_days = 0.0
+    trades = state.get("trades") or []
+    counts = {asset: sum(t.get("asset") == asset for t in trades) for asset in assets}
+    min_asset_trades = min(counts.values()) if counts else 0
+    wins = sum(float(t.get("pnl", 0)) for t in trades if float(t.get("pnl", 0)) > 0)
+    losses = -sum(float(t.get("pnl", 0)) for t in trades if float(t.get("pnl", 0)) < 0)
+    pf = (wins / losses if losses else (999.0 if wins else 0.0))
+    drawdown = float(metrics.get("max_drawdown") or 0.0)
+    paper_gates = [
+        _readiness_gate("paper_days", "Paper continuo", "PASS" if paper_days >= LIVE_PAPER_DAYS else "PENDING",
+                        round(paper_days, 1), f"≥ {LIVE_PAPER_DAYS} días"),
+        _readiness_gate("paper_trades", "Operaciones cerradas", "PASS" if len(trades) >= LIVE_MIN_TRADES else "PENDING",
+                        len(trades), f"≥ {LIVE_MIN_TRADES}"),
+        _readiness_gate("asset_sample", "Muestra mínima por moneda", "PASS" if min_asset_trades >= LIVE_MIN_TRADES_PER_ASSET else "PENDING",
+                        min_asset_trades, f"≥ {LIVE_MIN_TRADES_PER_ASSET} cierres/moneda"),
+        _readiness_gate("profit_factor", "Profit factor neto", "PASS" if pf >= LIVE_MIN_PROFIT_FACTOR else "PENDING",
+                        round(pf, 3), f"≥ {LIVE_MIN_PROFIT_FACTOR}"),
+        _readiness_gate("drawdown", "Drawdown máximo", "PASS" if drawdown <= LIVE_MAX_DRAWDOWN else "FAIL",
+                        round(drawdown, 6), f"≤ {LIVE_MAX_DRAWDOWN:.0%}"),
+    ]
+
+    market = state.get("market_data") or {}
+    market_status = market.get("status")
+    operational = [
+        _readiness_gate("engine_halt", "Motor sin bloqueo", "PASS" if not state.get("halted") else "FAIL",
+                        state.get("halted") or "Activo", "Sin halt"),
+        _readiness_gate("market_data", "Datos de mercado sincronizados",
+                        "PASS" if market_status == "ready" else "FAIL" if market_status == "blocked" else "PENDING",
+                        market_status or "Sin diagnóstico", "ready"),
+    ]
+    if broker_state is None:
+        operational.append(_readiness_gate("broker_ledger", "Ledger Alpaca paper", "PENDING",
+                                           "Sin estado", "Conciliado y sin órdenes pendientes"))
+        operational.append(_readiness_gate("broker_telemetry", "Telemetría de ejecución", "UNMEASURED",
+                                           "Sin telemetría", f"≥ {LIVE_MIN_BROKER_FILLS} fills; 0 duplicados/fallos"))
+    else:
+        cursor = broker_state.get("cursor")
+        caught_up = cursor is not None and cursor == len(state.get("events") or [])
+        broker_problem = broker_state.get("halted_auto")
+        broker_pending = broker_state.get("pending")
+        ledger_status = "FAIL" if broker_problem else "PENDING" if broker_pending or not caught_up else "PASS"
+        ledger_value = broker_problem or ("Orden pendiente" if broker_pending else
+                       "Conciliado" if caught_up else "Cursor pendiente")
+        operational.append(_readiness_gate("broker_ledger", "Ledger Alpaca paper", ledger_status,
+                                           ledger_value, "Conciliado y sin órdenes pendientes"))
+        telemetry = broker_state.get("auto_telemetry")
+        if not telemetry or not telemetry.get("since"):
+            operational.append(_readiness_gate("broker_telemetry", "Telemetría de ejecución", "UNMEASURED",
+                                               "Comienza con este despliegue",
+                                               f"≥ {LIVE_MIN_BROKER_FILLS} fills; 0 duplicados/fallos"))
+        else:
+            fills = int(telemetry.get("filled_orders", 0))
+            failures = int(telemetry.get("reconciliation_failures", 0))
+            duplicates = int(telemetry.get("duplicate_client_ids", 0))
+            status = "FAIL" if failures or duplicates else "PASS" if fills >= LIVE_MIN_BROKER_FILLS else "PENDING"
+            operational.append(_readiness_gate(
+                "broker_telemetry", "Telemetría de ejecución", status,
+                f"{fills} fills · {duplicates} duplicados · {failures} fallos",
+                f"≥ {LIVE_MIN_BROKER_FILLS} fills; 0 duplicados/fallos"))
+
+    sections = [
+        {"key": "evidence", "label": "Evidencia cuantitativa", "gates": evidence_gates},
+        {"key": "paper", "label": "Desempeño paper", "gates": paper_gates},
+        {"key": "operations", "label": "Operación e infraestructura", "gates": operational},
+    ]
+    blockers = [g for section in sections for g in section["gates"] if g["status"] != "PASS"]
+    return {
+        "status": "MICRO_LIVE_READY" if not blockers else "PAPER_ONLY",
+        "ready": not blockers,
+        "blocking_count": len(blockers),
+        "sections": sections,
+        "thresholds": {
+            "paper_days": LIVE_PAPER_DAYS, "trades": LIVE_MIN_TRADES,
+            "trades_per_asset": LIVE_MIN_TRADES_PER_ASSET,
+            "profit_factor": LIVE_MIN_PROFIT_FACTOR, "max_drawdown": LIVE_MAX_DRAWDOWN,
+            "broker_fills": LIVE_MIN_BROKER_FILLS,
+        },
+        "note": "Solo diagnóstico. No habilita órdenes reales ni modifica el riesgo.",
+    }
+
 
 def daily_returns(curve: list[dict], start: int, end: int, capital: float) -> np.ndarray:
     """Use full UTC days only, with initial equity and end-of-window exit costs.

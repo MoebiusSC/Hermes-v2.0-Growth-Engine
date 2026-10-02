@@ -188,6 +188,10 @@ class SharedPaper:
                 state["auto"][asset] = qty
         if "skipped_assets" not in state:
             state["skipped_assets"] = [state["skipped_asset"]] if state.get("skipped_asset") else []
+        state.setdefault("auto_telemetry", {
+            "since": time.time(), "filled_orders": 0, "reconciliation_checks": 0,
+            "reconciliation_failures": 0, "duplicate_client_ids": 0, "observed_client_ids": [],
+        })
         state.pop("auto_asset", None)
         state.pop("auto_qty", None)
         state.pop("skipped_asset", None)
@@ -238,6 +242,14 @@ class SharedPaper:
                     if held_qty <= 1e-9:
                         state["manual"].pop(asset, None)
                 else:
+                    telemetry = state["auto_telemetry"]
+                    client_id = pending["client_id"]
+                    if client_id in telemetry["observed_client_ids"]:
+                        telemetry["duplicate_client_ids"] += 1
+                    else:
+                        telemetry["observed_client_ids"].append(client_id)
+                        telemetry["observed_client_ids"] = telemetry["observed_client_ids"][-2000:]
+                        telemetry["filled_orders"] += 1
                     if held_qty > 1e-9:
                         state["auto"][asset] = held_qty
                     else:
@@ -442,9 +454,12 @@ class PaperAuto(SharedPaper):
             if s["halted_auto"] or s["pending"]:
                 return
             positions = self.api.positions()
+            telemetry = s["auto_telemetry"]
+            telemetry["reconciliation_checks"] += 1
             try:
                 self.validate(s, positions)
             except BrokerError as exc:
+                telemetry["reconciliation_failures"] += 1
                 s["halted_auto"] = str(exc)
                 self.save(s)
                 return
@@ -495,6 +510,10 @@ class PaperAuto(SharedPaper):
                         break
                     size = {"qty": quantity_string(float(held["qty"]), self.api.asset(asset))}
                 client_id = "hv2a-" + f"{index:012x}"
+                if client_id in s["auto_telemetry"]["observed_client_ids"]:
+                    s["auto_telemetry"]["duplicate_client_ids"] += 1
+                    s["halted_auto"] = "duplicate_client_id_attempt"
+                    break
                 payload = {"symbol": broker_symbol(asset), "side": side, "type": "market",
                            "time_in_force": "gtc", "client_order_id": client_id, **size}
                 s["pending"] = {"owner": "auto", "client_id": client_id, "payload": payload,
@@ -507,5 +526,10 @@ class PaperAuto(SharedPaper):
                 if s["pending"]:
                     return
                 positions = self.api.positions()
-                self.validate(s, positions)
+                telemetry["reconciliation_checks"] += 1
+                try:
+                    self.validate(s, positions)
+                except BrokerError:
+                    telemetry["reconciliation_failures"] += 1
+                    raise
             self.save(s)

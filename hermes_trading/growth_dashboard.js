@@ -151,6 +151,36 @@ function renderStrategies(data) {
   }
 }
 
+function renderReadiness(data) {
+  const readiness=data.live_readiness||{};
+  const ready=Boolean(readiness.ready), blockers=Number(readiness.blocking_count??0);
+  const pill=$('live-readiness-pill');
+  pill.textContent=ready?'Criterios completos':'PAPER ONLY';
+  pill.className=`gate-pill ${ready?'gate-pass':'gate-pending'}`;
+  $('live-readiness-headline').textContent=ready?
+    'Criterios para considerar un micro-live completados':
+    `${blockers} criterio${blockers===1?'':'s'} todavía no cumple${blockers===1?'':'n'}`;
+  $('live-readiness-summary').textContent=(readiness.note||'Solo diagnóstico.')+
+    ' Los umbrales del panel son puertas técnicas; no activan órdenes reales automáticamente.';
+  const groups=$('live-readiness-groups');groups.replaceChildren();
+  const label={PASS:'Cumple',PENDING:'Pendiente',FAIL:'No cumple',UNMEASURED:'No medible'};
+  const cls={PASS:'gate-pass',PENDING:'gate-pending',FAIL:'gate-fail',UNMEASURED:'gate-unmeasured'};
+  for(const section of readiness.sections||[]) {
+    const card=document.createElement('div');card.className='readiness-group';
+    const title=document.createElement('h4');title.textContent=section.label;card.append(title);
+    for(const gate of section.gates||[]) {
+      const row=document.createElement('div');row.className='readiness-gate';
+      const name=document.createElement('div');name.textContent=gate.label;
+      const badge=document.createElement('span');badge.className=`gate-pill ${cls[gate.status]||'gate-unmeasured'}`;
+      badge.textContent=label[gate.status]||gate.status;
+      const target=document.createElement('div');target.className='target';
+      target.textContent=`Actual: ${gate.value??'—'} · objetivo: ${gate.target||'—'}`;
+      row.append(name,badge,target);card.append(row);
+    }
+    groups.append(card);
+  }
+}
+
 function renderValidation(data) {
   const tbody=$('validation-rows');tbody.replaceChildren();
   const statuses={PASS:'Pasa',FAIL:'Rechaza',INSUFFICIENT:'Muestra insuficiente',PENDING:'Pendiente',OBSERVED:'Observado'};
@@ -235,6 +265,7 @@ function render(data) {
     ['activos',()=>renderAssets(data)],
     ['resultado por moneda',()=>renderAssetPerformance(data)],
     ['estrategias',()=>renderStrategies(data)],
+    ['preparación live',()=>renderReadiness(data)],
     ['validación',()=>renderValidation(data)],
     ['historial',()=>renderRows(data)],
   ];

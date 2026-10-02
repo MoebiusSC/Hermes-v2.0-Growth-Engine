@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .growth import GrowthConfig, Portfolio
-from .growth_validation import VERSION, dashboard_rows
+from .growth_validation import VERSION, dashboard_rows, live_readiness
 from .growth_run import _load_config, _paper, report
 from .manual_paper import MAX_BODY, ManualWallet, OrderError, QuoteError, quote as manual_quote
 from .alpaca_paper_bridge import (PaperAuto, PaperManual, BrokerError, configured, from_env)
@@ -45,12 +45,21 @@ def snapshot(path: Path) -> dict:
     book = Portfolio(cfg, saved["state"])
     s = book.state
     positions = [s["positions"][a] for a in sorted(s["positions"])]
+    metrics = report(book)
+    shared_path = path.with_name("alpaca_shared.json")
+    broker_state = None
+    if shared_path.exists():
+        try:
+            broker_state = json.loads(shared_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            broker_state = None
     return {
         "ready": True,
         "updated_at": path.stat().st_mtime,
         "initial_capital": cfg.capital,
         "assets": cfg.assets,
-        "metrics": report(book),
+        "metrics": metrics,
+        "live_readiness": live_readiness(s, metrics, cfg.assets, broker_state),
         "positions": [{k: position.get(k) for k in ("asset", "entry", "qty", "stop", "target", "regime",
                                                        "strategy", "target_r", "opened_ms", "risk_amount")}
                       for position in positions],

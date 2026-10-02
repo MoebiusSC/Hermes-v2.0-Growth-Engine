@@ -67,9 +67,19 @@
     .asset-performance-meta { display:grid; gap:7px; font-size:12px }
     .asset-performance-meta div { display:flex; justify-content:space-between; gap:12px; color:var(--muted) }
     .asset-performance-meta strong { color:var(--ink); font-weight:600; font-variant-numeric:tabular-nums; text-align:right }
+    .readiness-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:13px }
+    .readiness-group { background:#0b1822; border:1px solid var(--line); border-radius:12px; padding:15px }
+    .readiness-group h4 { margin:0 0 9px; font-size:13px }
+    .readiness-gate { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 12px; padding:9px 0; border-bottom:1px solid #20303c; font-size:12px }
+    .readiness-gate:last-child { border-bottom:0 }
+    .readiness-gate .target { color:var(--muted); font-size:11px }
+    .gate-pill { border-radius:999px; padding:4px 8px; font-size:10px; font-weight:800; align-self:start; white-space:nowrap }
+    .gate-pass { background:#0d3530; color:var(--teal) }.gate-pending { background:#382f1d; color:var(--amber) }
+    .gate-fail { background:#3a2026; color:var(--red) }.gate-unmeasured { background:#182632; color:var(--muted) }
+    .readiness-headline { font-size:21px; font-weight:650; margin:8px 0 4px }
     a { color:var(--teal) }
     footer { color:#6f8795; font-size:11px; margin-top:23px; line-height:1.6 }
-    @media(max-width:900px){.metrics{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.asset-performance-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:900px){.metrics{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.asset-performance-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.readiness-grid{grid-template-columns:1fr}}
     @media(max-width:700px){.manual-form{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:620px){.asset-performance-grid{grid-template-columns:1fr}}
     @media(max-width:530px){.shell{padding:20px 14px 40px}.metrics{gap:9px}.card{padding:16px}.value{font-size:23px}h2{font-size:26px}}
@@ -146,6 +156,12 @@
     <div class="row"><span>Posición atribuida al bot</span><strong id="alpaca-auto-positions">—</strong></div>
     <div class="row"><span>Última orden</span><strong id="alpaca-auto-last">—</strong></div>
     <p class="note">El bot empieza a reflejar órdenes cuando su cartera interna está sin posiciones. Si una moneda ya pertenece al operador manual, omite esa operación completa; si las posiciones divergen, suspende el envío a Alpaca. El saldo Alpaca mezcla ambos orígenes y no mide la rentabilidad aislada del bot. La curva de comparación usa la cartera interna.</p>
+  </section>
+  <section class="card" style="margin-bottom:13px" aria-label="Preparación técnica para fase real">
+    <div class="card-head"><div><div class="label" style="margin-bottom:6px">Puertas objetivas · no habilita capital real</div><h3>Preparación para Live</h3></div><span class="gate-pill gate-pending" id="live-readiness-pill">Evaluando</span></div>
+    <div class="readiness-headline" id="live-readiness-headline">Calculando criterios…</div>
+    <p class="note" id="live-readiness-summary">Hermes seguirá en PAPER ONLY aunque todos los criterios se cumplan; el cambio de modo requiere una decisión y configuración separadas.</p>
+    <div class="readiness-grid" id="live-readiness-groups"></div>
   </section>
   <section class="grid">
     <div class="card"><div class="card-head"><div><div class="label" style="margin-bottom:6px">Investigación cuantitativa</div><h3>Optimización automática</h3></div></div>
