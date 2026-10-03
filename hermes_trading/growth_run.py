@@ -51,9 +51,11 @@ def _strategy_metrics(trades: list[dict], capital: float) -> dict:
 
 
 def _asset_metrics(trades: list[dict], assets: tuple[str, ...]) -> dict:
-    """Historical realised P/L attribution for each configured asset."""
+    """Historical realised P/L attribution without dropping retired/tested assets."""
     result = {}
-    for asset in assets:
+    historical = sorted({str(t.get("asset")) for t in trades
+                         if t.get("asset") and t.get("asset") not in assets})
+    for asset in (*assets, *historical):
         rows = sorted((t for t in trades if t.get("asset") == asset),
                       key=lambda t: int(t.get("closed_ms", 0)))
         total = sum(float(t.get("pnl", 0.0)) for t in rows)
