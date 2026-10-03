@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from hermes_trading.growth import BAR_MS, GrowthConfig, Portfolio
 from hermes_trading.growth_market import prepare_feeds, pause
-from hermes_trading.growth_run import _recover_market_gap, _paper, _save
+from hermes_trading.growth_run import _cycle_delay, _recover_market_gap, _paper, _save
 from hermes_trading.strategy import closed
 from hermes_trading.adapters import price
 from test_alpaca_paper_bridge import FakeAPI
@@ -21,14 +21,15 @@ class MarketRecoveryTests(unittest.TestCase):
         self.now = 400 * BAR_MS + 20_000
         self.latest = 399 * BAR_MS
 
-    def feeds(self):
+    def feeds(self, now=None):
+        now = self.now if now is None else now
         def candles(step):
-            current = self.now // step * step
+            current = now // step * step
             times = list(range(current - 249 * step, current + step, step))
             return {'t': times, 'open': [100.] * 250, 'high': [101.] * 250,
                     'low': [99.] * 250, 'close': [100.] * 250, 'source': 'test'}
-        raw, hourly = candles(BAR_MS), closed(candles(4 * BAR_MS), '1h', self.now)
-        return {a: (closed(copy.deepcopy(raw), '15m', self.now), copy.deepcopy(hourly),
+        raw, hourly = candles(BAR_MS), closed(candles(4 * BAR_MS), '1h', now)
+        return {a: (closed(copy.deepcopy(raw), '15m', now), copy.deepcopy(hourly),
                     copy.deepcopy(raw)) for a in self.cfg.assets}
 
     def book(self, opened=False):
@@ -52,6 +53,41 @@ class MarketRecoveryTests(unittest.TestCase):
         self.assertIsNone(book.state['halted'])
         self.assertEqual(book.state['market_data']['status'], 'waiting')
         self.assertTrue(asyncio.run(prepare_feeds(book, self.feeds(), self.now)))
+
+    def test_preboundary_missing_forming_quote_uses_fresh_one_minute_fallback(self):
+        now = 400 * BAR_MS - 500
+        latest = 398 * BAR_MS
+        book, feeds = Portfolio(self.cfg), self.feeds(now)
+        book.state['last_bar'] = {a: latest for a in self.cfg.assets}
+        for asset, (bars, hours, raw) in list(feeds.items()):
+            raw = {k: v[:-1] if isinstance(v, list) else v for k, v in raw.items()}
+            feeds[asset] = (closed(copy.deepcopy(raw), '15m', now), hours, raw)
+        fallback = {'price': 100., 'source': 'binance',
+                    'source_ts': now // 60_000 * 60_000, 'observed_ms': now}
+        with patch.object(price, 'quote', new=AsyncMock(return_value=fallback)) as fresh:
+            self.assertTrue(asyncio.run(prepare_feeds(book, feeds, now)))
+            self.assertEqual(fresh.await_count, len(self.cfg.assets))
+        self.assertIsNone(book.state['halted'])
+        self.assertEqual(book.state['market_data']['status'], 'ready')
+
+    def test_preboundary_quote_outage_waits_without_latching_gap(self):
+        now = 400 * BAR_MS - 500
+        latest = 398 * BAR_MS
+        book, feeds = Portfolio(self.cfg), self.feeds(now)
+        book.state['last_bar'] = {a: latest for a in self.cfg.assets}
+        for asset, (bars, hours, raw) in list(feeds.items()):
+            raw = {k: v[:-1] if isinstance(v, list) else v for k, v in raw.items()}
+            feeds[asset] = (closed(copy.deepcopy(raw), '15m', now), hours, raw)
+        with patch.object(price, 'quote', new=AsyncMock(side_effect=RuntimeError('late quote'))):
+            self.assertFalse(asyncio.run(prepare_feeds(book, feeds, now)))
+        self.assertIsNone(book.state['halted'])
+        self.assertEqual(book.state['market_data']['status'], 'waiting')
+        self.assertTrue(all(p['reason'] == 'missing_current_quote'
+                            for p in book.state['market_data']['problems']))
+
+    def test_cycle_delay_aligns_five_seconds_after_minute(self):
+        self.assertAlmostEqual(_cycle_delay(100 * 60 + 59.5), 5.5)
+        self.assertAlmostEqual(_cycle_delay(100 * 60 + 5.0), 60.0)
 
     def test_real_gap_repairs_from_source_and_unrepairable_gap_stays_paused(self):
         book, good = self.book(), self.feeds()
