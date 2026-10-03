@@ -18,6 +18,13 @@ from .storage import atomic_write
 from .strategy import closed
 
 
+def _cycle_delay(now_s: float | None = None) -> float:
+    """Keep polling a few seconds after each minute instead of drifting into xx:59.xxx."""
+    now_s = time.time() if now_s is None else now_s
+    next_tick = (int(now_s) // 60 + 1) * 60 + 5
+    return max(1.0, next_tick - now_s)
+
+
 def _strategy_metrics(trades: list[dict], capital: float) -> dict:
     names = sorted({t.get("strategy", "hermes_core") for t in trades} | {"hermes_core", "sui_ema_26_55"})
     result = {}
@@ -44,9 +51,11 @@ def _strategy_metrics(trades: list[dict], capital: float) -> dict:
 
 
 def _asset_metrics(trades: list[dict], assets: tuple[str, ...]) -> dict:
-    """Historical realised P/L attribution for each configured asset."""
+    """Historical realised P/L attribution without dropping retired/tested assets."""
     result = {}
-    for asset in assets:
+    historical = sorted({str(t.get("asset")) for t in trades
+                         if t.get("asset") and t.get("asset") not in assets})
+    for asset in (*assets, *historical):
         rows = sorted((t for t in trades if t.get("asset") == asset),
                       key=lambda t: int(t.get("closed_ms", 0)))
         total = sum(float(t.get("pnl", 0.0)) for t in rows)
@@ -373,7 +382,7 @@ async def _paper(cfg: GrowthConfig, state_path: Path, once: bool) -> None:
                 print(f"exchange benchmark deferred: {type(exc).__name__}: {exc}", flush=True)
             if once:
                 return
-            await asyncio.sleep(60)
+            await asyncio.sleep(_cycle_delay())
     finally:
         await price.close()
 
