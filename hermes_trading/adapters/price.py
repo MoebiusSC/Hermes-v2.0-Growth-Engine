@@ -5,6 +5,8 @@ served it, so a geo-blocked primary isn't retried for every asset every minute.
 """
 from __future__ import annotations
 
+import math
+
 import ccxt.async_support as ccxt_async
 
 from ..config import env
@@ -15,6 +17,7 @@ from . import SCHEMA_VERSION
 FALLBACK_EXCHANGES = ("binance", "okx", "kraken")
 MIN_CANDLES = 20
 MAX_FLAT_SHARE = 0.5  # candles with high == low; above this the market is too thin to trade on
+QUOTE_MAX_AGE_MS = 120_000
 
 
 def _thin(rows: list) -> bool:
@@ -117,6 +120,42 @@ async def ohlcv(asset: str, tf: str, limit: int, fresh: bool = False) -> dict:
         _ohlcv_cache[key] = (time.monotonic(), candles)
         return candles
     raise RuntimeError(f"no exchange returned {tf} candles — " + "; ".join(errors))
+
+
+async def quote(asset: str, now_ms: int, source: str | None = None) -> dict:
+    """Fetch a fresh 1m execution quote, independent of the forming 15m candle."""
+    primary = env("EXCHANGE_ID", "binance")
+    order = [primary] + [e for e in FALLBACK_EXCHANGES if e != primary]
+    # Prefer the candle source first, then the exchange that most recently worked.
+    for candidate in (_preferred.get(asset), source):
+        if candidate in order:
+            order.remove(candidate)
+            order.insert(0, candidate)
+
+    errors = []
+    for exchange_id in order:
+        try:
+            rows = await _client(exchange_id, exchange_id == primary).fetch_ohlcv(
+                asset, timeframe="1m", limit=3)
+        except Exception as e:
+            errors.append(f"{exchange_id}: {type(e).__name__}: {e}"[:160])
+            continue
+        if not rows:
+            errors.append(f"{exchange_id}: no 1m quote")
+            continue
+        try:
+            ts, value = int(rows[-1][0]), float(rows[-1][4])
+        except (TypeError, ValueError, IndexError):
+            errors.append(f"{exchange_id}: malformed 1m quote")
+            continue
+        age_ms = max(0, now_ms - (ts + 60_000))
+        if (ts > now_ms + 60_000 or age_ms > QUOTE_MAX_AGE_MS
+                or not math.isfinite(value) or value <= 0):
+            errors.append(f"{exchange_id}: stale or invalid 1m quote")
+            continue
+        _preferred[asset] = exchange_id
+        return {"price": value, "source": exchange_id, "source_ts": ts, "observed_ms": now_ms}
+    raise RuntimeError("no exchange returned fresh 1m quote — " + "; ".join(errors))
 
 
 async def backfill(asset: str, candles: dict, since_ms: int, until_ms: int) -> dict:
