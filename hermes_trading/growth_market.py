@@ -9,6 +9,7 @@ from .strategy import closed
 DATA_HALTS = frozenset(("market_data_gap", "stale_or_unsynchronized_market_data",
                         "missing_current_quote", "consecutive_data_errors"))
 PUBLICATION_GRACE_MS = 120_000
+QUOTE_MAX_AGE_MS = 120_000
 
 
 def pause(book, reason: str) -> None:
@@ -49,10 +50,24 @@ def validate_prices(bars: dict) -> bool:
 
 
 def current_quote(raw: dict, now_ms: int) -> float | None:
+    fallback = raw.get("quote")
+    if isinstance(fallback, dict):
+        try:
+            observed = int(fallback.get("observed_ms", 0))
+            value = float(fallback.get("price"))
+        except (TypeError, ValueError):
+            observed, value = 0, 0.0
+        if 0 <= now_ms - observed <= QUOTE_MAX_AGE_MS and math.isfinite(value) and value > 0:
+            return value
     if not raw.get("t") or raw["t"][-1] != now_ms // BAR_MS * BAR_MS:
         return None
     value = float(raw["close"][-1])
     return value if math.isfinite(value) and value > 0 else None
+
+
+def _near_bar_boundary(now_ms: int) -> bool:
+    phase = now_ms % BAR_MS
+    return phase <= PUBLICATION_GRACE_MS or BAR_MS - phase <= PUBLICATION_GRACE_MS
 
 
 async def prepare_feeds(book, feeds: dict, now_ms: int) -> bool:
@@ -86,9 +101,16 @@ async def prepare_feeds(book, feeds: dict, now_ms: int) -> bool:
                 or any(b - a != 60 * 60_000 for a, b in zip(hours["t"][-12:], hours["t"][-11:]))):
             problems.append({"asset": asset, "source": raw.get("source"), "reason": "hourly_data_gap"})
         if current_quote(raw, now_ms) is None:
-            problems.append({"asset": asset, "source": raw.get("source"), "reason": "missing_current_quote"})
+            try:
+                raw["quote"] = await price.quote(asset, now_ms, raw.get("source"))
+                feeds[asset] = (bars, hours, raw)
+                if current_quote(raw, now_ms) is None:
+                    raise RuntimeError("quote validation failed")
+            except Exception as exc:
+                problems.append({"asset": asset, "source": raw.get("source"),
+                                 "reason": "missing_current_quote", "error": type(exc).__name__})
     waiting = bool(problems) and all(p["reason"] in ("publication_delay", "missing_current_quote")
-                                    for p in problems) and now_ms % BAR_MS <= PUBLICATION_GRACE_MS
+                                    for p in problems) and _near_bar_boundary(now_ms)
     health = {"status": "waiting" if waiting else "blocked" if problems else "ready",
               "checked_ms": now_ms, "expected_closed_bar": expected, "problems": problems}
     previous = book.state.get("market_data", {})
